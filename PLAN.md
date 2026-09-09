@@ -22,6 +22,14 @@ The application must not use the client's marketplace name, logo, or branding in
 
 These observations must be verified with automated fixtures before implementation decisions are considered final. Do not assume every future document has exactly the same relationship IDs or text-box ordering.
 
+## Implementation status
+
+- Phase 0 fixture extraction: implemented for both supplied samples.
+- Phase 1 GS1/GTIN domain validation: implemented and covered by unit tests.
+- Initial Create/Inspect workbench: implemented with browser smoke coverage.
+- Barcode PNG and basic 6x4 DOCX generation: implemented and package-tested.
+- Barcode decode, DOCX repair mutation, resizable repair editor, and batch scan API: next implementation slice.
+
 ## 3. Recommended architecture
 
 ### Application
