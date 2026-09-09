@@ -27,7 +27,7 @@ These observations must be verified with automated fixtures before implementatio
 - Phase 0 fixture extraction: implemented for both supplied samples.
 - Phase 1 GS1/GTIN domain validation: implemented and covered by unit tests.
 - Initial Create/Inspect workbench: implemented with browser smoke coverage.
-- Barcode PNG and basic 6x4 DOCX generation: implemented and package-tested.
+- Barcode PNG and exact sample-template 6x4 DOCX generation: implemented and package-tested. The writer preserves the sample package and replaces only scoped text and barcode media.
 - Barcode decode, DOCX repair mutation, resizable repair editor, and batch scan API: next implementation slice.
 
 ## 3. Recommended architecture

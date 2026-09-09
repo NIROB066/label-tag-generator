@@ -15,7 +15,7 @@ The first working slice is available:
 - GS1/GTIN normalization, check-digit validation, and AI payload parsing.
 - Safe DOCX fixture inspection for page geometry, text boxes, relationships, and images.
 - Server-side GS1-128 PNG generation with human-readable barcode text disabled.
-- Server-side 6x4 DOCX generation and browser download.
+- Server-side 6x4 DOCX generation by mutating the supplied sample template, preserving its floating text boxes, logo, artwork, margins, and Word package structure.
 
 The repair/scanning pipeline still needs the confirmed client symbology and scanner behavior described in [PLAN.md](PLAN.md).
 
