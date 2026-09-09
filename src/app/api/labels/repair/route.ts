@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { generateGs1BarcodePng } from "@/domain/barcode";
 import { buildGs1Payload } from "@/domain/gs1";
 import { LabelInput } from "@/domain/label-schema";
-import { generateLabelDocxFromTemplate } from "@/domain/docx-writer";
+import { repairDocxBarcode } from "@/domain/docx-repair";
 
 export const runtime = "nodejs";
 
@@ -23,12 +23,23 @@ export async function POST(request: Request) {
       ingredients: String(formData.get("ingredients") ?? ""),
       storageInstruction: String(formData.get("storageInstruction") ?? ""),
     };
+
+    const barcodeMediaFile = formData.get("barcodeMediaFile") ? String(formData.get("barcodeMediaFile")) : undefined;
+    const widthEmu = formData.get("widthEmu") ? Number(formData.get("widthEmu")) : undefined;
+    const heightEmu = formData.get("heightEmu") ? Number(formData.get("heightEmu")) : undefined;
+
     const payload = buildGs1Payload(input);
-    const barcode = await generateGs1BarcodePng(payload);
-    const repaired = await generateLabelDocxFromTemplate(
-      new Uint8Array(await file.arrayBuffer()),
-      input,
-      barcode,
+    const barcodePng = await generateGs1BarcodePng(payload);
+
+    const repaired = await repairDocxBarcode(
+      Buffer.from(await file.arrayBuffer()),
+      {
+        barcodeMediaFile,
+        newBarcodePng: barcodePng,
+        widthEmu,
+        heightEmu,
+        authoritativeBarcodeText: payload.humanReadable,
+      },
     );
 
     return new NextResponse(new Uint8Array(repaired), {

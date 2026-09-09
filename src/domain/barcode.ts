@@ -13,11 +13,11 @@ export async function generateGs1BarcodePng(
   return bwipjs.toBuffer({
     bcid: "gs1-128",
     text: payload.humanReadable,
-    scale: options.scale ?? 3,
-    height: options.height ?? 32,
+    scale: options.scale ?? 4,
+    height: options.height ?? 15,
     includetext: false,
     monochrome: true,
-    paddingwidth: 8,
-    paddingheight: 8,
+    paddingwidth: 10,
+    paddingheight: 4,
   });
 }

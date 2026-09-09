@@ -97,6 +97,7 @@ export function buildGs1Payload(input: {
   gtin: string;
   bestBefore: string;
   lotCode: string;
+  [key: string]: unknown;
 }): Gs1Payload {
   const gtin = normalizeGtinTo14(input.gtin);
   const bestBefore = normalizeBestBefore(input.bestBefore);

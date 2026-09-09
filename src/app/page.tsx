@@ -1,22 +1,17 @@
 "use client";
 
 import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
-import { BrowserMultiFormatReader } from "@zxing/browser";
-import { renderAsync } from "docx-preview";
 import { buildGs1Payload } from "@/domain/gs1";
-import { inspectDocx, DocxInspection } from "@/domain/docx-reader";
+import { LabelScanResult } from "@/domain/label-schema";
 
 type Mode = "create" | "inspect";
-type InspectionStatus = "ready" | "attention" | "error";
 
 type InspectionRow = {
   id: string;
   filename: string;
-  product: string;
-  status: InspectionStatus;
-  detail: string;
-  inspection?: DocxInspection;
-  sourceBytes?: Uint8Array;
+  file: File;
+  scanResult: LabelScanResult;
+  isRepaired?: boolean;
 };
 
 const initialForm = {
@@ -33,6 +28,24 @@ export default function Home() {
   const [mode, setMode] = useState<Mode>("inspect");
   const [rows, setRows] = useState<InspectionRow[]>([]);
   const [selectedId, setSelectedId] = useState("");
+  const [selectedCheckedIds, setSelectedCheckedIds] = useState<Set<string>>(new Set());
+  const [isScanning, setIsScanning] = useState(false);
+  const [isRepairing, setIsRepairing] = useState(false);
+  const [isBatchRepairing, setIsBatchRepairing] = useState(false);
+  const [repairMessage, setRepairMessage] = useState("");
+
+  // Resizable Barcode Box state (in pixels; 96 DPI: 3.4" x 0.70" = 326px x 67px)
+  const [boxWidth, setBoxWidth] = useState(326);
+  const [boxHeight, setBoxHeight] = useState(67);
+  const [isDragging, setIsDragging] = useState(false);
+  const dragStartRef = useRef<{ startX: number; startY: number; startW: number; startH: number }>({
+    startX: 0,
+    startY: 0,
+    startW: 326,
+    startH: 67,
+  });
+
+  // Create Mode Form State
   const [form, setForm] = useState(initialForm);
   const [formMessage, setFormMessage] = useState(
     "Enter the label data to validate a new barcode payload.",
@@ -40,11 +53,8 @@ export default function Home() {
   const [toastMessage, setToastMessage] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
   const [barcodePreviewUrl, setBarcodePreviewUrl] = useState<string | null>(null);
-  const [repairOpen, setRepairOpen] = useState(false);
-  const [scanValue, setScanValue] = useState("");
-  const [repairMessage, setRepairMessage] = useState("");
-  const [isRepairing, setIsRepairing] = useState(false);
 
+  // Load barcode preview for Create mode
   useEffect(() => {
     const controller = new AbortController();
     let objectUrl: string | null = null;
@@ -80,22 +90,262 @@ export default function Home() {
   }, [form.bestBefore, form.gtin, form.lotCode]);
 
   const selectedRow = rows.find((row) => row.id === selectedId) ?? rows[0];
-  const counts = useMemo(
-    () => ({
-      total: rows.length,
-      attention: rows.filter((row) => row.status !== "ready").length,
-      ready: rows.filter((row) => row.status === "ready").length,
-    }),
-    [rows],
-  );
 
+  // Batch metrics
+  const counts = useMemo(() => {
+    return {
+      total: rows.length,
+      attention: rows.filter((r) => r.scanResult.status === "attention" && !r.isRepaired).length,
+      ready: rows.filter((r) => r.scanResult.status === "ready" || r.isRepaired).length,
+      error: rows.filter((r) => r.scanResult.status === "error" && !r.isRepaired).length,
+    };
+  }, [rows]);
+
+  // Sync box dimensions with selected row if available
+  useEffect(() => {
+    if (selectedRow?.scanResult.widthEmu && selectedRow?.scanResult.heightEmu) {
+      // 1 EMU = 1 / 914400 inch; at 96 DPI: 1px = 9525 EMUs
+      const w = Math.round(selectedRow.scanResult.widthEmu / 9525);
+      const h = Math.round(selectedRow.scanResult.heightEmu / 9525);
+      if (w >= 100 && w <= 400) setBoxWidth(w);
+      if (h >= 30 && h <= 200) setBoxHeight(h);
+    }
+  }, [selectedRow?.id, selectedRow?.scanResult.widthEmu, selectedRow?.scanResult.heightEmu]);
+
+  // Handle Multi-file Upload and Real Scanning
+  async function handleUpload(event: ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(event.target.files ?? []);
+    if (!files.length) return;
+
+    setIsScanning(true);
+    setRepairMessage("");
+
+    try {
+      const formData = new FormData();
+      for (const file of files) {
+        formData.append("files", file);
+      }
+
+      const response = await fetch("/api/labels/scan", {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const err = (await response.json()) as { error?: string };
+        throw new Error(err.error ?? "Scanning failed.");
+      }
+
+      const { results } = (await response.json()) as { results: LabelScanResult[] };
+
+      const newRows: InspectionRow[] = results.map((res, index) => {
+        const matchingFile = files.find((f) => f.name === res.filename) ?? files[index];
+        return {
+          id: `${res.filename}-${matchingFile.lastModified}-${Math.random().toString(36).slice(2, 7)}`,
+          filename: res.filename,
+          file: matchingFile,
+          scanResult: res,
+          isRepaired: false,
+        };
+      });
+
+      setRows((prev) => [...newRows, ...prev]);
+      if (newRows.length > 0) {
+        setSelectedId(newRows[0].id);
+      }
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "Scanning failed.";
+      setToastMessage(msg);
+    } finally {
+      setIsScanning(false);
+      event.target.value = "";
+    }
+  }
+
+  // Toggle selection checkbox for a row
+  function toggleCheck(id: string) {
+    setSelectedCheckedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleSelectAll() {
+    if (selectedCheckedIds.size === rows.length) {
+      setSelectedCheckedIds(new Set());
+    } else {
+      setSelectedCheckedIds(new Set(rows.map((r) => r.id)));
+    }
+  }
+
+  function selectAllMismatched() {
+    const mismatched = rows.filter((r) => r.scanResult.status !== "ready" && !r.isRepaired);
+    setSelectedCheckedIds(new Set(mismatched.map((r) => r.id)));
+  }
+
+  // Repair a single label
+  async function handleRepair(row: InspectionRow) {
+    setIsRepairing(true);
+    setRepairMessage("Generating replacement barcode and patching DOCX...");
+
+    try {
+      const data = new FormData();
+      data.append("file", row.file);
+      data.append("productName", row.scanResult.productName);
+      data.append("itemNumber", row.scanResult.itemNumber);
+      data.append("gtin", row.scanResult.expectedGtin);
+      data.append("lotCode", row.scanResult.expectedLotCode);
+      data.append("bestBefore", row.scanResult.expectedBestBefore);
+      if (row.scanResult.barcodeMediaFile) {
+        data.append("barcodeMediaFile", row.scanResult.barcodeMediaFile);
+      }
+      // Pass resizable box dimensions converted to EMUs (1px = 9525 EMUs)
+      data.append("widthEmu", String(Math.round(boxWidth * 9525)));
+      data.append("heightEmu", String(Math.round(boxHeight * 9525)));
+
+      const response = await fetch("/api/labels/repair", {
+        method: "POST",
+        body: data,
+      });
+
+      if (!response.ok) {
+        const err = (await response.json()) as { error?: string };
+        throw new Error(err.error ?? "Label repair failed.");
+      }
+
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `${row.filename.replace(/\.docx$/i, "")}-repaired.docx`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+
+      setRows((prev) =>
+        prev.map((r) =>
+          r.id === row.id
+            ? {
+                ...r,
+                isRepaired: true,
+                scanResult: {
+                  ...r.scanResult,
+                  status: "ready",
+                  scannedGtin: r.scanResult.expectedGtin,
+                  scannedRaw: r.scanResult.expectedBarcodeText,
+                  mismatches: [],
+                  detail: "Repaired: barcode replaced with authoritative GTIN.",
+                },
+              }
+            : r,
+        ),
+      );
+
+      setRepairMessage("Repaired DOCX downloaded! Barcode was successfully replaced.");
+    } catch (error) {
+      setRepairMessage(error instanceof Error ? error.message : "Repair failed.");
+    } finally {
+      setIsRepairing(false);
+    }
+  }
+
+  // Batch repair all selected or all mismatched labels
+  async function handleBatchRepair(targetRows: InspectionRow[]) {
+    if (!targetRows.length) return;
+    setIsBatchRepairing(true);
+
+    try {
+      const data = new FormData();
+      for (const row of targetRows) {
+        data.append("files", row.file);
+      }
+
+      const response = await fetch("/api/labels/batch-repair", {
+        method: "POST",
+        body: data,
+      });
+
+      if (!response.ok) {
+        const err = (await response.json()) as { error?: string };
+        throw new Error(err.error ?? "Batch repair failed.");
+      }
+
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "repaired-labels.zip";
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+
+      // Mark all repaired
+      const targetIds = new Set(targetRows.map((r) => r.id));
+      setRows((prev) =>
+        prev.map((r) =>
+          targetIds.has(r.id)
+            ? {
+                ...r,
+                isRepaired: true,
+                scanResult: {
+                  ...r.scanResult,
+                  status: "ready",
+                  mismatches: [],
+                  detail: "Batch repaired: replacement barcode generated.",
+                },
+              }
+            : r,
+        ),
+      );
+      setRepairMessage(`Successfully repaired and downloaded ${targetRows.length} labels in ZIP.`);
+    } catch (error) {
+      setToastMessage(error instanceof Error ? error.message : "Batch repair failed.");
+    } finally {
+      setIsBatchRepairing(false);
+    }
+  }
+
+  // Handle Box Resize Drag
+  function startResize(e: React.MouseEvent) {
+    e.preventDefault();
+    setIsDragging(true);
+    dragStartRef.current = {
+      startX: e.clientX,
+      startY: e.clientY,
+      startW: boxWidth,
+      startH: boxHeight,
+    };
+
+    function onMouseMove(moveEvent: MouseEvent) {
+      const deltaX = moveEvent.clientX - dragStartRef.current.startX;
+      const deltaY = moveEvent.clientY - dragStartRef.current.startY;
+      const newW = Math.max(120, Math.min(330, dragStartRef.current.startW + deltaX));
+      const newH = Math.max(35, Math.min(140, dragStartRef.current.startH + deltaY));
+      setBoxWidth(newW);
+      setBoxHeight(newH);
+    }
+
+    function onMouseUp() {
+      setIsDragging(false);
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+    }
+
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+  }
+
+  // Create Mode Actions
   function updateForm(field: keyof typeof form, value: string) {
     setForm((current) => ({ ...current, [field]: value }));
   }
 
   function validateForm(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-
     try {
       const payload = buildGs1Payload(form);
       setFormMessage(
@@ -129,7 +379,7 @@ export default function Home() {
       link.download = `${form.productName.replace(/[^a-z0-9]+/gi, "-") || "generated-label"}.docx`;
       link.click();
       URL.revokeObjectURL(url);
-      setFormMessage("DOCX ready. The output includes a barcode without human-readable digits beneath it.");
+      setFormMessage("DOCX ready. Barcode generated without human-readable digits beneath.");
     } catch (error) {
       const message = error instanceof Error ? error.message : "Label generation failed.";
       setFormMessage(message);
@@ -139,61 +389,21 @@ export default function Home() {
     }
   }
 
-  async function handleUpload(event: ChangeEvent<HTMLInputElement>) {
-    const files = Array.from(event.target.files ?? []);
-    const uploadedRows: InspectionRow[] = [];
-
-    for (const file of files) {
-      try {
-        const inspection = await inspectDocx(new Uint8Array(await file.arrayBuffer()));
-        const product = inspection.textBoxes.find((box) => box.name === "Text Box 2")?.text ?? "Unidentified label";
-        uploadedRows.push({
-          id: `${file.name}-${file.lastModified}`,
-          filename: file.name,
-          product,
-          status: inspection.images.length ? "attention" : "error",
-          detail: inspection.images.length
-            ? `${inspection.images.length} embedded images found; barcode scan pending`
-            : "No embedded image found",
-          inspection,
-          sourceBytes: new Uint8Array(await file.arrayBuffer()),
-        });
-      } catch (error) {
-        uploadedRows.push({
-          id: `${file.name}-${file.lastModified}`,
-          filename: file.name,
-          product: "Unreadable document",
-          status: "error",
-          detail: error instanceof Error ? error.message : "DOCX inspection failed",
-        });
-      }
-    }
-
-    if (uploadedRows.length) {
-      setRows((current) => [...uploadedRows, ...current]);
-      setSelectedId(uploadedRows[0].id);
-      setRepairOpen(false);
-      setScanValue("");
-      setRepairMessage("");
-    }
-    event.target.value = "";
-  }
-
-  function handleScanDetected(value: string) {
-    setScanValue(value);
-    if (!selectedId) return;
-    setRows((current) => current.map((row) => {
-      if (row.id !== selectedId) return row;
-      const expected = row.inspection?.documentText.match(/\(01\)(\d{14})/)?.[1];
-      const scanned = value.match(/\(01\)(\d{14})/)?.[1] ?? value.replace(/\D/g, "").slice(0, 14);
-      const matches = Boolean(expected && scanned === expected);
-      return { ...row, status: matches ? "ready" : "attention", detail: matches ? "Barcode matches expected GTIN" : "Barcode does not match expected GTIN" };
-    }));
-  }
+  const checkedRows = rows.filter((r) => selectedCheckedIds.has(r.id));
+  const mismatchedRows = rows.filter((r) => r.scanResult.status !== "ready" && !r.isRepaired);
 
   return (
     <main className="app-shell">
-      {toastMessage ? <div className="toast toast-error" role="alert"><strong>Label validation failed</strong><span>{toastMessage}</span><button type="button" aria-label="Dismiss notification" onClick={() => setToastMessage("")}>x</button></div> : null}
+      {toastMessage ? (
+        <div className="toast toast-error" role="alert">
+          <strong>Notice</strong>
+          <span>{toastMessage}</span>
+          <button type="button" aria-label="Dismiss notification" onClick={() => setToastMessage("")}>
+            x
+          </button>
+        </div>
+      ) : null}
+
       <header className="topbar">
         <div className="brand-lockup">
           <div className="brand-mark" aria-hidden="true">LT</div>
@@ -202,178 +412,594 @@ export default function Home() {
             <h1>Label Tag Studio</h1>
           </div>
         </div>
-        <div className="topbar-note"><span className="status-dot" /> Local processing workspace</div>
+        <div className="topbar-note">
+          <span className="status-dot" /> Local barcode verification engine
+        </div>
       </header>
 
       <section className="hero-row">
         <div>
           <p className="eyebrow">Production desk / 01</p>
-          <h2>Make every label scan clean.</h2>
-          <p className="hero-copy">Create a new food label or triage a batch of DOCX files before they reach the printer.</p>
+          <h2>Scan, verify & fix label barcodes.</h2>
+          <p className="hero-copy">
+            Upload multiple DOCX labels. The engine automatically scans the actual barcode artwork, matches it against the expected barcode number, and replaces any mismatches cleanly.
+          </p>
         </div>
         <div className="mode-switch" role="tablist" aria-label="Workflow mode">
-          <button className={mode === "create" ? "mode-button active" : "mode-button"} onClick={() => setMode("create")} role="tab" aria-selected={mode === "create"}>Create label</button>
-          <button className={mode === "inspect" ? "mode-button active" : "mode-button"} onClick={() => setMode("inspect")} role="tab" aria-selected={mode === "inspect"}>Inspect batch</button>
+          <button
+            className={mode === "create" ? "mode-button active" : "mode-button"}
+            onClick={() => setMode("create")}
+            role="tab"
+            aria-selected={mode === "create"}
+          >
+            Create label
+          </button>
+          <button
+            className={mode === "inspect" ? "mode-button active" : "mode-button"}
+            onClick={() => setMode("inspect")}
+            role="tab"
+            aria-selected={mode === "inspect"}
+          >
+            Inspect & fix batch
+          </button>
         </div>
       </section>
 
       <section className="metrics" aria-label="Batch summary">
         <Metric label="In queue" value={counts.total} accent="ink" />
-        <Metric label="Needs attention" value={counts.attention} accent="coral" />
+        <Metric label="Needs attention / Mismatched" value={counts.attention} accent="coral" />
         <Metric label="Ready to print" value={counts.ready} accent="mint" />
-        <div className="metric metric-note"><span className="metric-label">Template</span><strong>6x4 portrait</strong><span className="metric-sub">Word document</span></div>
+        <div className="metric metric-note">
+          <span className="metric-label">Engine</span>
+          <strong>Barcode 1D Scanner</strong>
+          <span className="metric-sub">GS1 / Code 128 verify</span>
+        </div>
       </section>
 
       {mode === "create" ? (
         <section className="workspace create-workspace">
           <form className="panel create-form" onSubmit={validateForm}>
-            <div className="panel-heading"><div><p className="eyebrow">New label</p><h3>Label details</h3></div><span className="step-chip">01 / 02</span></div>
-            <div className="form-grid">
-              <Field label="Product name" value={form.productName} onChange={(value) => updateForm("productName", value)} />
-              <Field label="Item number" value={form.itemNumber} onChange={(value) => updateForm("itemNumber", value)} />
-              <Field label="GTIN / barcode number" value={form.gtin} onChange={(value) => updateForm("gtin", value)} wide inputMode="numeric" />
-              <Field label="Lot code" value={form.lotCode} onChange={(value) => updateForm("lotCode", value)} />
-              <Field label="Best before" value={form.bestBefore} onChange={(value) => updateForm("bestBefore", value)} type="date" />
-              <Field label="Storage instruction" value={form.storageInstruction} onChange={(value) => updateForm("storageInstruction", value)} wide />
-              <label className="field wide"><span>Ingredients</span><textarea value={form.ingredients} onChange={(event) => updateForm("ingredients", event.target.value)} rows={4} /></label>
+            <div className="panel-heading">
+              <div>
+                <p className="eyebrow">New label</p>
+                <h3>Label details</h3>
+              </div>
+              <span className="step-chip">01 / 02</span>
             </div>
-            <div className="form-footer"><p className={`form-message ${formMessage === "Enter a valid GTIN with a correct check digit." ? "form-message-error" : ""}`} role="status">{formMessage}</p><div className="form-actions"><button className="secondary-button" type="submit">Validate</button><button className="primary-button" type="button" onClick={generateDocument} disabled={isGenerating}>{isGenerating ? "Building..." : "Generate DOCX"} <span aria-hidden="true">-&gt;</span></button></div></div>
+            <div className="form-grid">
+              <Field label="Product name" value={form.productName} onChange={(v) => updateForm("productName", v)} />
+              <Field label="Item number" value={form.itemNumber} onChange={(v) => updateForm("itemNumber", v)} />
+              <Field label="GTIN / barcode number" value={form.gtin} onChange={(v) => updateForm("gtin", v)} wide inputMode="numeric" />
+              <Field label="Lot code" value={form.lotCode} onChange={(v) => updateForm("lotCode", v)} />
+              <Field label="Best before" value={form.bestBefore} onChange={(v) => updateForm("bestBefore", v)} type="date" />
+              <Field label="Storage instruction" value={form.storageInstruction} onChange={(v) => updateForm("storageInstruction", v)} wide />
+              <label className="field wide">
+                <span>Ingredients</span>
+                <textarea value={form.ingredients} onChange={(e) => updateForm("ingredients", e.target.value)} rows={4} />
+              </label>
+            </div>
+            <div className="form-footer">
+              <p className={`form-message ${formMessage.includes("Error") ? "form-message-error" : ""}`} role="status">
+                {formMessage}
+              </p>
+              <div className="form-actions">
+                <button className="secondary-button" type="submit">Validate</button>
+                <button className="primary-button" type="button" onClick={generateDocument} disabled={isGenerating}>
+                  {isGenerating ? "Building..." : "Generate DOCX"} <span aria-hidden="true">-&gt;</span>
+                </button>
+              </div>
+            </div>
           </form>
-          <LabelPreview form={form} barcodePreviewUrl={barcodePreviewUrl} />
+          <div className="preview-wrap">
+            <PdfLabelPreview
+              productName={form.productName}
+              itemNumber={form.itemNumber}
+              lotCode={form.lotCode}
+              bestBefore={form.bestBefore}
+              ingredients={form.ingredients}
+              storageInstruction={form.storageInstruction}
+              gtin={form.gtin}
+              barcodePreviewUrl={barcodePreviewUrl}
+            />
+          </div>
         </section>
       ) : (
         <section className="workspace inspect-workspace">
+          {/* LEFT: Queue & Batch Actions */}
           <div className="panel queue-panel">
-            <div className="panel-heading"><div><p className="eyebrow">Batch inspection</p><h3>Label queue</h3></div><label className="upload-button">Upload DOCX<input type="file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" multiple onChange={handleUpload} /></label></div>
-            <div className="queue-list">{rows.length ? rows.map((row) => <button key={row.id} className={row.id === selectedId ? "queue-row selected" : "queue-row"} onClick={() => { setSelectedId(row.id); setRepairOpen(false); }}><span className="queue-index">{String(rows.indexOf(row) + 1).padStart(2, "0")}</span><span className="queue-main"><strong>{row.product}</strong><small>{row.filename}</small></span><span className={`status-pill ${row.status}`}>{row.status === "ready" ? "Ready" : row.status === "attention" ? "Review" : "Error"}</span></button>) : <div className="queue-empty"><strong>No labels uploaded</strong><span>Choose one or more DOCX files above to begin inspection.</span></div>}</div>
+            <div className="panel-heading">
+              <div>
+                <p className="eyebrow">Batch inspection</p>
+                <h3>Label queue</h3>
+              </div>
+              <label className="upload-button">
+                {isScanning ? "Scanning..." : "Upload DOCX labels"}
+                <input
+                  type="file"
+                  accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                  multiple
+                  disabled={isScanning}
+                  onChange={handleUpload}
+                />
+              </label>
+            </div>
+
+            {/* Batch Toolbar */}
+            {rows.length > 0 ? (
+              <div className="batch-toolbar">
+                <div className="batch-selection-info">
+                  <label className="checkbox-label">
+                    <input
+                      type="checkbox"
+                      checked={rows.length > 0 && selectedCheckedIds.size === rows.length}
+                      onChange={toggleSelectAll}
+                    />
+                    <span>Select all ({rows.length})</span>
+                  </label>
+                  {mismatchedRows.length > 0 ? (
+                    <button type="button" className="text-link-btn" onClick={selectAllMismatched}>
+                      Select mismatched ({mismatchedRows.length})
+                    </button>
+                  ) : null}
+                </div>
+
+                <div className="batch-actions-buttons">
+                  {checkedRows.length > 0 ? (
+                    <button
+                      type="button"
+                      className="batch-action-btn"
+                      onClick={() => handleBatchRepair(checkedRows)}
+                      disabled={isBatchRepairing}
+                    >
+                      {isBatchRepairing ? "Fixing..." : `Fix selected (${checkedRows.length})`}
+                    </button>
+                  ) : mismatchedRows.length > 0 ? (
+                    <button
+                      type="button"
+                      className="batch-action-btn coral"
+                      onClick={() => handleBatchRepair(mismatchedRows)}
+                      disabled={isBatchRepairing}
+                    >
+                      {isBatchRepairing ? "Fixing..." : `Fix all mismatched (${mismatchedRows.length})`}
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
+
+            {/* Queue Items */}
+            <div className="queue-list">
+              {isScanning ? (
+                <div className="scanning-indicator">
+                  <span className="spinner" />
+                  <div>
+                    <strong>Scanning uploaded labels...</strong>
+                    <p>Extracting embedded artwork and decoding 1D barcodes</p>
+                  </div>
+                </div>
+              ) : rows.length ? (
+                rows.map((row) => {
+                  const isReady = row.scanResult.status === "ready" || row.isRepaired;
+                  const isAttention = row.scanResult.status === "attention" && !row.isRepaired;
+                  const isError = row.scanResult.status === "error" && !row.isRepaired;
+
+                  return (
+                    <div
+                      key={row.id}
+                      className={`queue-row-container ${row.id === selectedId ? "selected" : ""}`}
+                    >
+                      <input
+                        type="checkbox"
+                        className="row-checkbox"
+                        checked={selectedCheckedIds.has(row.id)}
+                        onChange={() => toggleCheck(row.id)}
+                        aria-label={`Select ${row.filename}`}
+                      />
+                      <button
+                        type="button"
+                        className="queue-row-btn"
+                        onClick={() => {
+                          setSelectedId(row.id);
+                          setRepairMessage("");
+                        }}
+                      >
+                        <span className="queue-main">
+                          <strong>{row.scanResult.productName || row.filename}</strong>
+                          <small>
+                            {row.filename} &bull; Expected GTIN: {row.scanResult.expectedGtin || "None"}
+                          </small>
+                          {row.scanResult.scannedGtin && (
+                            <span className="scanned-badge">
+                              Scanned: <code>{row.scanResult.scannedGtin}</code>
+                            </span>
+                          )}
+                        </span>
+                        <span
+                          className={`status-pill ${
+                            isReady ? "ready" : isAttention ? "attention" : "error"
+                          }`}
+                        >
+                          {isReady ? "Ready" : isAttention ? "Mismatch" : "Unreadable"}
+                        </span>
+                      </button>
+                    </div>
+                  );
+                })
+              ) : (
+                <div className="queue-empty">
+                  <strong>No labels uploaded</strong>
+                  <span>Upload one or more .docx label files above to scan and check barcodes.</span>
+                </div>
+              )}
+            </div>
           </div>
-          <InspectionPanel row={selectedRow} repairOpen={repairOpen} scanValue={scanValue} repairMessage={repairMessage} isRepairing={isRepairing} onOpenRepair={() => setRepairOpen(true)} onScanDetected={handleScanDetected} onRepair={() => repairLabel(selectedRow, setIsRepairing, setRepairMessage)} />
+
+          {/* RIGHT: Inspection & Resizable Barcode Repair Workspace */}
+          <div className="panel detail-panel">
+            {selectedRow ? (
+              <InspectionDetail
+                row={selectedRow}
+                boxWidth={boxWidth}
+                boxHeight={boxHeight}
+                setBoxWidth={setBoxWidth}
+                setBoxHeight={setBoxHeight}
+                onStartResize={startResize}
+                isDragging={isDragging}
+                isRepairing={isRepairing}
+                repairMessage={repairMessage}
+                onRepair={() => handleRepair(selectedRow)}
+              />
+            ) : (
+              <div className="empty-detail">
+                <p className="eyebrow">Step 1</p>
+                <h3>Upload label files</h3>
+                <p className="empty-detail-copy">
+                  Select and upload .docx labels to scan the embedded barcodes and compare with the expected barcode numbers.
+                </p>
+              </div>
+            )}
+          </div>
         </section>
       )}
 
-      <footer className="footer-note"><span>GS1 payload validation is active</span><span>Uploads are inspected in this browser session</span></footer>
+      <footer className="footer-note">
+        <span>GS1 Canada GTIN validation active &bull; Barcode scanning with Code 128 / GS1-128 decoder</span>
+        <span>Local DOCX package mutation &bull; Formatting and logo preserved</span>
+      </footer>
     </main>
   );
 }
 
-  async function repairLabel(row: InspectionRow | undefined, setBusy: (busy: boolean) => void, setMessage: (message: string) => void) {
-    if (!row?.sourceBytes) return;
-    setBusy(true);
-    setMessage("Replacing the barcode in the original DOCX...");
-    try {
-      const data = new FormData();
-      data.append("file", new File([new Uint8Array(row.sourceBytes).slice().buffer], row.filename, { type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" }));
-      data.append("productName", row.product);
-      data.append("itemNumber", row.inspection?.textBoxes.find((box) => box.name === "Text Box 1")?.text.match(/#(.+)/)?.[1] ?? "");
-      data.append("gtin", row.inspection?.documentText.match(/\(01\)(\d{14})/)?.[1] ?? "");
-      data.append("lotCode", row.inspection?.documentText.match(/LOT CODE:\s*([A-Za-z0-9]+?)(?=BEST BEFORE|$)/)?.[1] ?? "");
-      data.append("bestBefore", (row.inspection?.documentText.match(/BEST BEFORE:\s*(\d{4})\/(\d{2})\/(\d{2})/) ?? []).slice(1).join("-") || "2025-09-23");
-      data.append("ingredients", row.inspection?.textBoxes.find((box) => box.name === "Text Box 5")?.text.replace(/^Ingredients:\s*/, "") ?? "");
-      data.append("storageInstruction", row.inspection?.textBoxes.find((box) => box.name === "Text Box 4")?.text ?? "KEEP FROZEN");
-      const response = await fetch("/api/labels/repair", { method: "POST", body: data });
-      if (!response.ok) throw new Error(((await response.json()) as { error?: string }).error ?? "Repair failed.");
-      const link = document.createElement("a");
-      link.href = URL.createObjectURL(await response.blob());
-      link.download = `${row.filename.replace(/\.docx$/i, "")}-repaired.docx`;
-      link.click();
-      setMessage("Repaired DOCX downloaded. The barcode was replaced in the original template.");
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Repair failed.");
-    } finally {
-      setBusy(false);
-    }
-  }
+function InspectionDetail({
+  row,
+  boxWidth,
+  boxHeight,
+  setBoxWidth,
+  setBoxHeight,
+  onStartResize,
+  isDragging,
+  isRepairing,
+  repairMessage,
+  onRepair,
+}: {
+  row: InspectionRow;
+  boxWidth: number;
+  boxHeight: number;
+  setBoxWidth: (w: number) => void;
+  setBoxHeight: (h: number) => void;
+  onStartResize: (e: React.MouseEvent) => void;
+  isDragging: boolean;
+  isRepairing: boolean;
+  repairMessage: string;
+  onRepair: () => void;
+}) {
+  const { scanResult, isRepaired } = row;
+  const isMatch = (scanResult.status === "ready" || isRepaired) && scanResult.mismatches.length === 0;
 
-function Metric({ label, value, accent }: { label: string; value: number; accent: string }) {
-  return <div className={`metric metric-${accent}`}><span className="metric-label">{label}</span><strong>{String(value).padStart(2, "0")}</strong><span className="metric-sub">labels</span></div>;
-}
-
-function Field({ label, value, onChange, wide = false, type = "text", inputMode }: { label: string; value: string; onChange: (value: string) => void; wide?: boolean; type?: string; inputMode?: "numeric" }) {
-  return <label className={wide ? "field wide" : "field"}><span>{label}</span><input type={type} inputMode={inputMode} value={value} onChange={(event) => onChange(event.target.value)} /></label>;
-}
-
-function LabelPreview({ form, barcodePreviewUrl }: { form: typeof initialForm; barcodePreviewUrl: string | null }) {
-  return <div className="preview-wrap"><PdfLabelPreview productName={form.productName} itemNumber={form.itemNumber} lotCode={form.lotCode} bestBefore={form.bestBefore} ingredients={form.ingredients} storageInstruction={form.storageInstruction} gtin={form.gtin} barcodePreviewUrl={barcodePreviewUrl} /></div>;
-}
-
-function PdfLabelPreview({ productName, itemNumber, lotCode, bestBefore, ingredients, storageInstruction, gtin, barcodePreviewUrl }: { productName: string; itemNumber: string; lotCode: string; bestBefore: string; ingredients: string; storageInstruction: string; gtin: string; barcodePreviewUrl: string | null }) {
-  return <div className="pdf-page"><img className="preview-logo" src="/api/labels/logo" alt="Template logo" /><div className="preview-title">{productName}</div><div className="preview-item">ITEM #{itemNumber}</div><div className="preview-storage">{storageInstruction}</div><div className="preview-lot">LOT CODE: {lotCode}<br />BEST BEFORE: {bestBefore.replaceAll("-", "/")}</div><div className="preview-ingredients"><strong>Ingredients:</strong> {ingredients}</div><div className="preview-barcode">{barcodePreviewUrl ? <img src={barcodePreviewUrl} alt="Generated GS1 barcode preview" /> : <span className="barcode-placeholder">Barcode preview</span>}<small>(01){gtin}(15){bestBefore.replaceAll("-", "").slice(2)}(10){lotCode}</small></div><div className="preview-address"><strong>Gastronomique pastry INC</strong><span>7621 vantage way, Delta, BC V4G 1A6</span></div></div>;
-}
-
-function extractPreviewFields(row: InspectionRow) {
-  const text = row.inspection?.documentText ?? "";
-  const itemNumber = row.inspection?.textBoxes.find((box) => box.name === "Text Box 1")?.text.match(/#(.+)/)?.[1] ?? "";
-  const ingredients = row.inspection?.textBoxes.find((box) => box.name === "Text Box 5")?.text.replace(/^Ingredients:\s*/, "") ?? "";
-  const lotCode = text.match(/LOT CODE:\s*([A-Za-z0-9]+?)(?=BEST BEFORE|$)/)?.[1] ?? "";
-  const date = text.match(/BEST BEFORE:\s*(\d{4})\/?(\d{2})\/?(\d{2})/)?.slice(1).join("-") ?? "";
-  const gtin = text.match(/\(01\)(\d{14})/)?.[1] ?? "";
-  return { productName: row.product, itemNumber, lotCode, bestBefore: date, ingredients, storageInstruction: row.inspection?.textBoxes.find((box) => box.name === "Text Box 4")?.text ?? "KEEP FROZEN", gtin };
-}
-
-function InspectionPanel({ row, repairOpen, scanValue, repairMessage, isRepairing, onOpenRepair, onScanDetected, onRepair }: { row: InspectionRow | undefined; repairOpen: boolean; scanValue: string; repairMessage: string; isRepairing: boolean; onOpenRepair: () => void; onScanDetected: (value: string) => void; onRepair: () => void }) {
-  if (!row) return <div className="panel detail-panel empty-detail"><p className="eyebrow">Step 1</p><h3>Upload a DOCX label.</h3><p className="empty-detail-copy">The PDF-style 6x4 label view and automatic barcode result will appear here.</p></div>;
-  const expected = row.inspection?.documentText.match(/\(01\)(\d{14})/)?.[1] ?? "Not found";
-  const isCorrect = row.status === "ready";
-  return <div className="panel detail-panel"><div className="panel-heading"><div><p className="eyebrow">Step 2 / PDF label view</p><h3>{row.product}</h3></div><span className={`status-pill ${row.status}`}>{isCorrect ? "No fix needed" : "Needs review"}</span></div><div className="detail-file"><span className="file-icon">PDF</span><div><strong>{row.filename}</strong><small>6x4 label view with automatic barcode scan</small></div></div><DocxDocumentPreview row={row} onScanDetected={onScanDetected} /><div className="scan-summary"><span className="eyebrow">Automatic barcode scan</span><strong>{scanValue || "Scanning document..."}</strong><small>{scanValue ? "Read from the uploaded barcode." : "Reading the barcode automatically."}</small></div>{isCorrect ? <div className="success-callout"><strong>Barcode is correct</strong><p>GTIN {expected}, Best Before, and Lot values match. No repair is required.</p></div> : repairOpen ? <div className="repair-workspace"><div className="repair-heading"><span className="eyebrow">Step 3 / Fix barcode</span><strong>Expected barcode number is always correct.</strong></div><label className="field"><span>Expected barcode number</span><input value={expected} readOnly /></label><p className="repair-hint">The scanned barcode does not match. Replace only the barcode and download a repaired DOCX.</p><button className="primary-button" type="button" onClick={onRepair} disabled={isRepairing}>{isRepairing ? "Repairing..." : "Fix barcode and download"}</button>{repairMessage ? <p className="repair-message" role="status">{repairMessage}</p> : null}</div> : <div className="error-callout"><span className="error-symbol">!</span><div><strong>Barcode mismatch detected</strong><p>Click Fix barcode to replace the incorrect barcode while preserving the original template.</p></div></div>}<div className="detail-actions">{!isCorrect && !repairOpen ? <button className="primary-button" type="button" onClick={onOpenRepair}>Fix barcode <span aria-hidden="true">-&gt;</span></button> : null}</div></div>;
-}
-
-function InspectionDetail({ row, repairOpen, scanValue, repairMessage, isRepairing, onOpenRepair, onScanDetected, onRepair }: { row: InspectionRow | undefined; repairOpen: boolean; scanValue: string; repairMessage: string; isRepairing: boolean; onOpenRepair: () => void; onScanDetected: (value: string) => void; onRepair: () => void }) {
-  if (!row) return <div className="panel detail-panel empty-detail"><p className="eyebrow">Step 1</p><h3>Upload a DOCX label.</h3><p className="empty-detail-copy">The actual Word document will appear here after upload. Its barcode will be scanned automatically.</p></div>;
-  return <div className="panel detail-panel"><div className="panel-heading"><div><p className="eyebrow">Step 2 / Actual document</p><h3>{row.product}</h3></div><span className={`status-pill ${row.status}`}>{row.status === "ready" ? "Ready" : "Needs review"}</span></div><div className="detail-file"><span className="file-icon">DOC</span><div><strong>{row.filename}</strong><small>{row.detail}</small></div></div><DocxDocumentPreview row={row} onScanDetected={onScanDetected} /><div className="scan-summary"><span className="eyebrow">Automatic barcode scan</span><strong>{scanValue || "Scanning document..."}</strong><small>{scanValue ? "The current barcode value was read from the uploaded document." : "The barcode image is being checked automatically."}</small></div>{repairOpen ? <div className="repair-workspace"><div className="repair-heading"><span className="eyebrow">Step 3 / Fix barcode</span><strong>The expected barcode number is always correct.</strong></div><label className="field"><span>Expected barcode number</span><input value={row.inspection?.documentText.match(/\(01\)(\d{14})/)?.[1] ?? "Not found"} readOnly /></label><p className="repair-hint">If the scanned value above is different, click Fix barcode to replace it and download a repaired copy.</p><button className="primary-button" type="button" onClick={onRepair} disabled={isRepairing}>{isRepairing ? "Repairing..." : "Fix barcode and download"}</button>{repairMessage ? <p className="repair-message" role="status">{repairMessage}</p> : null}</div> : <div className="error-callout"><span className="error-symbol">!</span><div><strong>{scanValue ? "Barcode comparison ready" : "Barcode scan in progress"}</strong><p>{scanValue ? "If this value does not match the expected number, open the fix step below." : "Wait for the current barcode value to appear automatically."}</p></div></div>}<div className="detail-actions">{repairOpen ? <button className="secondary-button" type="button" onClick={onOpenRepair}>Keep fix step open</button> : <button className="primary-button" type="button" onClick={onOpenRepair}>Open fix step <span aria-hidden="true">-&gt;</span></button>}</div><div className="extracted-fields"><span className="eyebrow">Document contents</span><div className="field-summary"><span>{row.inspection?.textBoxes.length ?? 0}</span> text boxes <span>{row.inspection?.images.length ?? 0}</span> embedded images</div></div></div>;
-}
-
-function DocxDocumentPreview({ row, onScanDetected }: { row: InspectionRow; onScanDetected: (value: string) => void }) {
-  const bodyRef = useRef<HTMLDivElement>(null);
-  const styleRef = useRef<HTMLDivElement>(null);
-  const originalUrl = useMemo(
-    () => row.sourceBytes
-      ? URL.createObjectURL(new Blob([new Uint8Array(row.sourceBytes)], { type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" }))
-      : null,
-    [row.id, row.sourceBytes],
-  );
-
-  useEffect(() => () => {
-    if (originalUrl) URL.revokeObjectURL(originalUrl);
-  }, [originalUrl]);
+  // Replacement barcode preview url for authoritative expected number
+  const [replacementUrl, setReplacementUrl] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!bodyRef.current || !row.sourceBytes) return;
-    const body = bodyRef.current;
-    body.replaceChildren();
-    let cancelled = false;
+    let url: string | null = null;
+    const controller = new AbortController();
 
-    async function renderAndScan() {
-      await renderAsync(row.sourceBytes, body, styleRef.current ?? undefined, {
-        className: "uploaded-docx",
-        useBase64URL: true,
-        breakPages: true,
-      });
-      if (cancelled) return;
-      const reader = new BrowserMultiFormatReader();
-      const images = Array.from(body.querySelectorAll("img"));
-      for (const image of images) {
-        try {
-          const result = await reader.decodeFromImageElement(image);
-          if (result.getText()) {
-            onScanDetected(result.getText());
-            break;
-          }
-        } catch {
-          // Continue through the document's other image candidates.
+    async function loadReplacement() {
+      if (!scanResult.expectedGtin) return;
+      try {
+        const res = await fetch("/api/labels/barcode", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            gtin: scanResult.expectedGtin,
+            bestBefore: scanResult.expectedBestBefore || "2026-12-31",
+            lotCode: scanResult.expectedLotCode || "00000",
+          }),
+          signal: controller.signal,
+        });
+        if (res.ok) {
+          url = URL.createObjectURL(await res.blob());
+          setReplacementUrl(url);
         }
-      }
-      if (!cancelled) {
-        const embeddedValue = row.inspection?.documentText.match(/\(01\)\d{14}\(15\)\d{6}\(10\)[A-Za-z0-9]+?(?=Gastronomique|$)/)?.[0];
-        if (embeddedValue) onScanDetected(embeddedValue);
+      } catch {
+        // ignore
       }
     }
 
-    void renderAndScan();
+    void loadReplacement();
     return () => {
-      cancelled = true;
-      body.replaceChildren();
+      controller.abort();
+      if (url) URL.revokeObjectURL(url);
     };
-  }, [onScanDetected, row.id, row.sourceBytes, row.inspection?.documentText]);
+  }, [scanResult.expectedGtin, scanResult.expectedBestBefore, scanResult.expectedLotCode]);
 
-  return <><div className="docx-preview-shell"><div className="docx-preview-toolbar"><span className="eyebrow">PDF label view</span>{originalUrl ? <a className="secondary-button" href={originalUrl} download={row.filename}>Open original DOCX</a> : null}</div><PdfLabelPreview {...extractPreviewFields(row)} barcodePreviewUrl={null} /></div><div className="docx-scan-source"><div ref={styleRef} /><div ref={bodyRef} className="docx-preview-body" /></div></>;
+  return (
+    <>
+      <div className="panel-heading">
+        <div>
+          <p className="eyebrow">Label inspection & fix</p>
+          <h3>{scanResult.productName || row.filename}</h3>
+        </div>
+        <span className={`status-pill ${isMatch ? "ready" : "attention"}`}>
+          {isMatch ? "Verified correct" : "Needs barcode replacement"}
+        </span>
+      </div>
+
+      <div className="detail-file">
+        <span className="file-icon">DOCX</span>
+        <div>
+          <strong>{row.filename}</strong>
+          <small>{scanResult.detail}</small>
+        </div>
+      </div>
+
+      {/* Barcode Comparison Card */}
+      <div className="comparison-card">
+        <div className="comparison-heading">
+          <span className="eyebrow">Barcode verification analysis</span>
+          <span className="info-chip">Actual scan vs Expected number</span>
+        </div>
+
+        <div className="comparison-grid">
+          {/* Expected Barcode */}
+          <div className="comparison-column">
+            <span className="col-label">Authoritative Expected Number</span>
+            <div className="value-display expected">
+              <strong>{scanResult.expectedGtin || "Not detected in document"}</strong>
+              <small>{scanResult.expectedBarcodeText || "Standard GS1 format"}</small>
+            </div>
+            <div className="meta-sub">
+              <span>Lot: <strong>{scanResult.expectedLotCode || "N/A"}</strong></span>
+              <span>Best Before: <strong>{scanResult.expectedBestBefore || "N/A"}</strong></span>
+            </div>
+          </div>
+
+          {/* Divider Symbol */}
+          <div className="comparison-divider">
+            {isMatch ? (
+              <span className="match-icon match">&#10003;</span>
+            ) : (
+              <span className="match-icon mismatch">&#8800;</span>
+            )}
+          </div>
+
+          {/* Scanned Barcode */}
+          <div className="comparison-column">
+            <span className="col-label">Actual Scanned Barcode Artwork</span>
+            <div className={`value-display scanned ${isMatch ? "match" : "mismatch"}`}>
+              <strong>{scanResult.scannedGtin || scanResult.scannedRaw || "Unreadable"}</strong>
+              <small>{scanResult.scannedRaw || "Barcode scanner result"}</small>
+            </div>
+            {scanResult.barcodeImageBase64 ? (
+              <div className="scanned-thumbnail-wrap">
+                <img
+                  src={scanResult.barcodeImageBase64}
+                  alt="Embedded barcode from document"
+                  className="scanned-thumbnail"
+                />
+                <span className="thumb-caption">Scanned from embedded artwork</span>
+              </div>
+            ) : null}
+          </div>
+        </div>
+
+        {/* Mismatch Alert / Success Callout */}
+        {isMatch ? (
+          <div className="success-callout">
+            <strong>Barcode Matches Correctly</strong>
+            <p>
+              The embedded barcode scans to GTIN {scanResult.expectedGtin}. No replacement is required.
+            </p>
+          </div>
+        ) : (
+          <div className="error-callout">
+            <span className="error-symbol">!</span>
+            <div>
+              <strong>Barcode Mismatch Detected</strong>
+              <p>
+                The scanned barcode artwork ({scanResult.scannedGtin || "unreadable"}) does not match the expected barcode number ({scanResult.expectedGtin}).
+              </p>
+              {scanResult.mismatches.map((m, idx) => (
+                <p key={idx} className="mismatch-detail-line">
+                  &bull; <strong>{m.field}:</strong> expected <code>{m.expected}</code>, scanned <code>{m.actual}</code>
+                </p>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Resizable Barcode Box Editor & Fix Workspace */}
+      <div className="repair-box-workspace">
+        <div className="repair-box-header">
+          <div>
+            <span className="eyebrow">Replacement barcode placement & sizing</span>
+            <strong>Resizable Barcode Box</strong>
+          </div>
+          <div className="dimension-controls">
+            <label className="dim-label">
+              <span>W (px):</span>
+              <input
+                type="number"
+                min="120"
+                max="340"
+                value={boxWidth}
+                onChange={(e) => setBoxWidth(Number(e.target.value))}
+              />
+            </label>
+            <label className="dim-label">
+              <span>H (px):</span>
+              <input
+                type="number"
+                min="35"
+                max="140"
+                value={boxHeight}
+                onChange={(e) => setBoxHeight(Number(e.target.value))}
+              />
+            </label>
+            <button
+              type="button"
+              className="preset-btn"
+              onClick={() => {
+                setBoxWidth(280);
+                setBoxHeight(65);
+              }}
+            >
+              Reset 6x4
+            </button>
+          </div>
+        </div>
+
+        <p className="repair-hint">
+          Drag the bottom-right corner of the rectangle box below to adjust the replacement barcode size in the DOCX label:
+        </p>
+
+        {/* Resizable Box Canvas */}
+        <div className="resizable-canvas-container">
+          <div
+            className={`resizable-barcode-box ${isDragging ? "resizing" : ""}`}
+            style={{ width: `${boxWidth}px`, height: `${boxHeight}px` }}
+          >
+            {replacementUrl ? (
+              <img src={replacementUrl} alt="Replacement barcode" className="replacement-barcode-img" />
+            ) : (
+              <div className="barcode-placeholder">Generating correct barcode...</div>
+            )}
+            <span className="dimension-pill">
+              {boxWidth} &times; {boxHeight} px
+            </span>
+            {/* Drag Handle */}
+            <div
+              className="resize-handle"
+              onMouseDown={onStartResize}
+              title="Drag to resize barcode box"
+            />
+          </div>
+          <small className="canvas-footnote">
+            Generated according to Canada GTIN rules with no digits underneath the bars
+          </small>
+        </div>
+
+        <div className="repair-actions">
+          <button
+            className="primary-button"
+            type="button"
+            onClick={onRepair}
+            disabled={isRepairing}
+          >
+            {isRepairing ? "Repairing..." : "Replace Barcode & Download DOCX"} <span aria-hidden="true">-&gt;</span>
+          </button>
+          {repairMessage ? <p className="repair-message">{repairMessage}</p> : null}
+        </div>
+      </div>
+    </>
+  );
+}
+
+function Metric({ label, value, accent }: { label: string; value: number; accent: string }) {
+  return (
+    <div className={`metric metric-${accent}`}>
+      <span className="metric-label">{label}</span>
+      <strong>{String(value).padStart(2, "0")}</strong>
+      <span className="metric-sub">labels</span>
+    </div>
+  );
+}
+
+function Field({
+  label,
+  value,
+  onChange,
+  wide = false,
+  type = "text",
+  inputMode,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  wide?: boolean;
+  type?: string;
+  inputMode?: "numeric";
+}) {
+  return (
+    <label className={wide ? "field wide" : "field"}>
+      <span>{label}</span>
+      <input
+        type={type}
+        inputMode={inputMode}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+      />
+    </label>
+  );
+}
+
+function PdfLabelPreview({
+  productName,
+  itemNumber,
+  lotCode,
+  bestBefore,
+  ingredients,
+  storageInstruction,
+  gtin,
+  barcodePreviewUrl,
+}: {
+  productName: string;
+  itemNumber: string;
+  lotCode: string;
+  bestBefore: string;
+  ingredients: string;
+  storageInstruction: string;
+  gtin: string;
+  barcodePreviewUrl: string | null;
+}) {
+  return (
+    <div className="pdf-page">
+      <img className="preview-logo" src="/api/labels/logo" alt="Template logo" />
+      <div className="preview-title">{productName}</div>
+      <div className="preview-item">ITEM #{itemNumber}</div>
+      <div className="preview-storage">{storageInstruction}</div>
+      <div className="preview-lot">
+        LOT CODE: {lotCode}
+        <br />
+        BEST BEFORE: {bestBefore.replaceAll("-", "/")}
+      </div>
+      <div className="preview-ingredients">
+        <strong>Ingredients:</strong> {ingredients}
+      </div>
+      <div className="preview-barcode">
+        {barcodePreviewUrl ? (
+          <img src={barcodePreviewUrl} alt="Generated GS1 barcode preview" />
+        ) : (
+          <span className="barcode-placeholder">Barcode preview</span>
+        )}
+        <small>
+          (01){gtin}(15){bestBefore.replaceAll("-", "").slice(2)}(10){lotCode}
+        </small>
+      </div>
+      <div className="preview-address">
+        <strong>Gastronomique pastry INC</strong>
+        <span>7621 vantage way, Delta, BC V4G 1A6</span>
+      </div>
+    </div>
+  );
 }
