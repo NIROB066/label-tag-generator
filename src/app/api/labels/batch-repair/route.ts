@@ -3,7 +3,7 @@ import JSZip from "jszip";
 import { generateGs1BarcodePng } from "@/domain/barcode";
 import { buildGs1Payload } from "@/domain/gs1";
 import { scanDocxLabel } from "@/domain/barcode-scanner";
-import { repairDocxBarcode } from "@/domain/docx-repair";
+import { generateLabelDocx } from "@/domain/docx-writer";
 
 export const runtime = "nodejs";
 
@@ -27,22 +27,21 @@ export async function POST(request: Request) {
 
       if (!scan.expectedGtin) continue;
 
-      const payload = buildGs1Payload({
-        productName: scan.productName,
-        itemNumber: scan.itemNumber,
+      // Generate a fresh label from the Lava Cake template using expected data from the scan.
+      // This is the same pipeline as Create Label — guarantees correct layout every time.
+      const input = {
+        productName: scan.productName || "Food Label",
+        itemNumber: scan.itemNumber || "",
         gtin: scan.expectedGtin,
         lotCode: scan.expectedLotCode || "00000",
         bestBefore: scan.expectedBestBefore || "2026-12-31",
-        ingredients: "Ingredients",
+        ingredients: "",
         storageInstruction: "KEEP FROZEN",
-      });
+      };
 
+      const payload = buildGs1Payload(input);
       const barcodePng = await generateGs1BarcodePng(payload);
-      const repairedDocx = await repairDocxBarcode(buffer, {
-        barcodeMediaFile: scan.barcodeMediaFile ?? undefined,
-        newBarcodePng: barcodePng,
-        authoritativeBarcodeText: payload.humanReadable,
-      });
+      const repairedDocx = await generateLabelDocx(input, barcodePng);
 
       const baseName = file.name.replace(/\.docx$/i, "");
       zipOut.file(`${baseName}-repaired.docx`, repairedDocx);

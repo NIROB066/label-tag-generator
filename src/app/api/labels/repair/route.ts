@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { generateGs1BarcodePng } from "@/domain/barcode";
 import { buildGs1Payload } from "@/domain/gs1";
 import { LabelInput } from "@/domain/label-schema";
-import { repairDocxBarcode } from "@/domain/docx-repair";
+import { generateLabelDocx } from "@/domain/docx-writer";
 
 export const runtime = "nodejs";
 
@@ -21,28 +21,16 @@ export async function POST(request: Request) {
       lotCode: String(formData.get("lotCode") ?? ""),
       bestBefore: String(formData.get("bestBefore") ?? ""),
       ingredients: String(formData.get("ingredients") ?? ""),
-      storageInstruction: String(formData.get("storageInstruction") ?? ""),
+      storageInstruction: String(formData.get("storageInstruction") ?? "KEEP FROZEN"),
     };
 
-    const barcodeMediaFile = formData.get("barcodeMediaFile") ? String(formData.get("barcodeMediaFile")) : undefined;
-    const widthEmu = formData.get("widthEmu") ? Number(formData.get("widthEmu")) : undefined;
-    const heightEmu = formData.get("heightEmu") ? Number(formData.get("heightEmu")) : undefined;
-
+    // Generate a fresh label from the template (same as Create Label).
+    // This guarantees correct layout and avoids corruption from surgical DOCX patching.
     const payload = buildGs1Payload(input);
     const barcodePng = await generateGs1BarcodePng(payload);
+    const repairedDocx = await generateLabelDocx(input, barcodePng);
 
-    const repaired = await repairDocxBarcode(
-      Buffer.from(await file.arrayBuffer()),
-      {
-        barcodeMediaFile,
-        newBarcodePng: barcodePng,
-        widthEmu,
-        heightEmu,
-        authoritativeBarcodeText: payload.humanReadable,
-      },
-    );
-
-    return new NextResponse(new Uint8Array(repaired), {
+    return new NextResponse(new Uint8Array(repairedDocx), {
       headers: {
         "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "Content-Disposition": `attachment; filename="${safeFilename(file.name.replace(/\.docx$/i, ""))}-repaired.docx"`,

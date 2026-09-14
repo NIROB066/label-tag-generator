@@ -71,22 +71,49 @@ export async function generateLabelDocxFromTemplate(
 }
 
 function updateLotAndDateRuns(content: string, lotCode: string, bestBefore: string): string {
-  const date = bestBefore.replaceAll("-", "/");
-  const dateStart = content.indexOf("BEST BEFORE:");
-  const dateEnd = content.indexOf("</w:p>", dateStart);
-  const dateParagraph = content.slice(dateStart, dateEnd);
+  const date = bestBefore.replaceAll("-", "/"); // YYYY/MM/DD
+
+  // The text box content has two paragraphs:
+  //   Para 1: LOT CODE: <digit-run>   (runs: "LOT ", "CODE", ":", " ", "26815")
+  //   Para 2: BEST BEFORE: <date-runs> (runs: "BEST BEFORE:", "202", "7", "/", "02", "/", "15")
+  // "LOT CODE:" is split across runs, so indexOf("LOT CODE:") = -1 — we must split by <w:p>.
+
+  const para1End = content.indexOf("</w:p>");
+  const para2End = content.indexOf("</w:p>", para1End + 1);
+
+  if (para1End < 0 || para2End < 0) {
+    // Unexpected structure — fall back to no-op
+    return content;
+  }
+
+  // ── Para 1 (LOT CODE): replace the first pure-digit run ─────────────────
+  let para1 = content.slice(0, para1End);
+  {
+    let replaced = false;
+    para1 = para1.replace(TEXT_TAG, (tag) => {
+      if (replaced) return tag;
+      const value = textValue(tag);
+      if (/^\d+$/.test(value)) {
+        replaced = true;
+        return replaceTextTag(tag, escapeXml(lotCode));
+      }
+      return tag;
+    });
+  }
+
+  // ── Para 2 (BEST BEFORE): replace digit/slash runs positionally ──────────
+  // The year may be split across multiple runs (e.g. "202" + "7"), so we use
+  // a positional index across all digit/slash runs within this paragraph only.
   const dateValues = [date.slice(0, 4), "", "/", date.slice(5, 7), "/", date.slice(8, 10)];
   let dateIndex = 0;
-  const updatedDateParagraph = dateParagraph.replace(TEXT_TAG, (tag) => {
+  const para2 = content.slice(para1End, para2End).replace(TEXT_TAG, (tag) => {
     const value = textValue(tag);
-    if (!/^\d{1,4}$|^\/$/.test(value)) {
-      return tag;
-    }
-    const replacement = dateValues[dateIndex++];
-    return replaceTextTag(tag, replacement ?? "");
+    if (!/^\d{1,4}$|^\/$/.test(value)) return tag;
+    const replacement = dateValues[dateIndex++] ?? "";
+    return replaceTextTag(tag, replacement);
   });
-  const withDate = content.replace(dateParagraph, updatedDateParagraph);
-  return withDate.replace(/(<w:t(?: [^>]*)?>)\d+(<\/w:t>)/g, `$1${escapeXml(lotCode)}$2`);
+
+  return para1 + para2 + content.slice(para2End);
 }
 
 function updateIngredientsRuns(content: string, ingredients: string): string {

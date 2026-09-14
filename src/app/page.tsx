@@ -4,6 +4,14 @@ import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "re
 import { buildGs1Payload } from "@/domain/gs1";
 import { LabelScanResult } from "@/domain/label-schema";
 
+/**
+ * Converts GS1 parenthesised form to the raw numeric string scanners emit.
+ * e.g. "(01)10627146285749(15)250923(10)72722" → "0110627146285749152509231072722"
+ */
+function stripGS1Parens(raw: string): string {
+  return raw.replace(/[()]/g, "");
+}
+
 type Mode = "create" | "inspect";
 
 type InspectionRow = {
@@ -786,7 +794,11 @@ function InspectionDetail({
           <div className="comparison-column">
             <span className="col-label">Actual Scanned Barcode Artwork</span>
             <div className={`value-display scanned ${isMatch ? "match" : "mismatch"}`}>
-              <strong>{scanResult.scannedGtin || scanResult.scannedRaw || "Unreadable"}</strong>
+              <strong>
+                {scanResult.scannedRaw
+                  ? stripGS1Parens(scanResult.scannedRaw)
+                  : scanResult.scannedGtin || "Unreadable"}
+              </strong>
               <small>{scanResult.scannedRaw || "Barcode scanner result"}</small>
             </div>
             {scanResult.barcodeImageBase64 ? (

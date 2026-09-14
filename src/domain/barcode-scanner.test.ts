@@ -49,7 +49,7 @@ describe("scanDocxLabel", () => {
     expect(result.scannedGtin).toBe("10627146285749");
     expect(result.status).toBe("ready");
     expect(result.barcodeMediaFile).toBe(
-      "word/media/753f407e37f28cdeeb8e2ef52a13d22ef1e2640c.png",
+      "word/media/image2.png",
     );
   });
 });
