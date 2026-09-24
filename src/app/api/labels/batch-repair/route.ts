@@ -35,8 +35,8 @@ export async function POST(request: Request) {
         gtin: scan.expectedGtin,
         lotCode: scan.expectedLotCode || "00000",
         bestBefore: scan.expectedBestBefore || "2026-12-31",
-        ingredients: "",
-        storageInstruction: "KEEP FROZEN",
+        ingredients: scan.expectedIngredients || "",
+        storageInstruction: scan.expectedStorageInstruction || "KEEP FROZEN",
       };
 
       const payload = buildGs1Payload(input);

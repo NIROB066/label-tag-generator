@@ -1,21 +1,24 @@
 import { buildGs1Payload } from "@/domain/gs1";
 import { readFile } from "node:fs/promises";
-import path from "node:path";
 import JSZip from "jszip";
 import { LabelInput } from "@/domain/label-schema";
-
-const LAVA_CAKE_TEMPLATE = path.join(
-  process.cwd(),
-  "sample",
-  "Lava Cake Label 6''x4''.docx",
-);
+import {
+  LABEL_TEMPLATE,
+  labelTemplatePath,
+} from "@/domain/label-template";
+import {
+  INGREDIENTS_FONT_MAX_HALF_POINTS,
+  INGREDIENTS_LONG_THRESHOLD,
+  pickIngredientFontSize,
+  pickTitleFontSize,
+} from "@/domain/label-typography";
 
 /**
  * Mutates the supplied sample package instead of rebuilding it. This keeps
  * Word's floating anchors, text-box geometry, theme, fonts, and artwork intact.
  */
 export async function generateLabelDocx(input: LabelInput, barcodePng: Buffer): Promise<Buffer> {
-  const template = await readFile(LAVA_CAKE_TEMPLATE);
+  const template = await readFile(labelTemplatePath());
   return generateLabelDocxFromTemplate(template, input, barcodePng);
 }
 
@@ -25,6 +28,7 @@ export async function generateLabelDocxFromTemplate(
   barcodePng: Buffer,
 ): Promise<Buffer> {
   const payload = buildGs1Payload(input);
+  const { textBoxes, barcodeDrawing, barcodeMediaPath, geometry } = LABEL_TEMPLATE;
   const zip = await JSZip.loadAsync(template, { checkCRC32: true });
   const documentEntry = zip.file("word/document.xml");
   if (!documentEntry) {
@@ -32,33 +36,39 @@ export async function generateLabelDocxFromTemplate(
   }
 
   let documentXml = await documentEntry.async("text");
-  documentXml = replaceTextBox(documentXml, "Text Box 1", `ITEM #${input.itemNumber}`);
-  documentXml = replaceTextBox(documentXml, "Text Box 2", input.productName);
-  documentXml = updateTextBox(documentXml, "Text Box 3", (content) =>
+  documentXml = replaceTextBox(documentXml, textBoxes.itemNumber, `ITEM #${input.itemNumber}`);
+  documentXml = replaceTextBox(documentXml, textBoxes.productName, input.productName);
+  documentXml = updateTextBox(documentXml, textBoxes.lotAndBestBefore, (content) =>
     updateLotAndDateRuns(content, input.lotCode, input.bestBefore),
   );
-  documentXml = replaceTextBox(documentXml, "Text Box 4", input.storageInstruction);
-  documentXml = updateTextBox(documentXml, "Text Box 5", (content) =>
+  documentXml = replaceTextBox(documentXml, textBoxes.storageInstruction, input.storageInstruction);
+  documentXml = updateTextBox(documentXml, textBoxes.ingredients, (content) =>
     updateIngredientsRuns(content, input.ingredients),
   );
-  documentXml = updateTextBox(documentXml, "Text Box 2", (content) =>
-    updateProductFontSize(content, input.productName),
+  documentXml = updateTextBox(documentXml, textBoxes.productName, (content) =>
+    applyFontSize(content, pickTitleFontSize(input.productName)),
   );
-  documentXml = updateTextBox(documentXml, "Text Box 5", (content) =>
+  documentXml = updateTextBox(documentXml, textBoxes.ingredients, (content) =>
     updateIngredientFontSize(content, input.ingredients),
   );
   documentXml = updateAnchorGeometry(
     documentXml,
-    "Picture 7",
-    3108960,
-    740664,
+    barcodeDrawing,
+    geometry.barcodeAnchor.widthEmu,
+    geometry.barcodeAnchor.heightEmu,
   );
-  documentXml = updateVerticalOffset(documentXml, "Text Box 7", 912114);
+  documentXml = updateVerticalOffset(
+    documentXml,
+    textBoxes.humanReadableBarcode,
+    geometry.humanReadableBarcodeOffsetEmu,
+  );
   documentXml = updateAnchorGeometry(
     documentXml,
-    "Text Box 5",
-    3211195,
-    input.ingredients.length > 120 ? 1508760 : 1276350,
+    textBoxes.ingredients,
+    geometry.ingredientsBox.widthEmu,
+    input.ingredients.length > INGREDIENTS_LONG_THRESHOLD
+      ? geometry.ingredientsBox.expandedHeightEmu
+      : geometry.ingredientsBox.compactHeightEmu,
   );
   documentXml = documentXml.replace(
     /\(01\)\d{14}\(15\)\d{6}\(10\)[^<]+/g,
@@ -66,8 +76,34 @@ export async function generateLabelDocxFromTemplate(
   );
 
   zip.file("word/document.xml", documentXml);
-  zip.file("word/media/image2.png", barcodePng);
+  zip.file(barcodeMediaPath, barcodePng);
   return zip.generateAsync({ type: "nodebuffer", compression: "STORE" });
+}
+
+/**
+ * Matches the template's own Arial space run (as used after "LOT CODE:")
+ * so the date renders as "BEST BEFORE: YYYY/MM/DD" instead of being glued
+ * to the label.
+ */
+const ARIAL_SPACE_RUN =
+  '<w:r><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:cs="Arial"/></w:rPr><w:t xml:space="preserve"> </w:t></w:r>';
+
+function ensureSpaceAfterBestBeforeLabel(para2: string): string {
+  const labelEnd = para2.indexOf(">BEST BEFORE:</w:t>");
+  if (labelEnd < 0) {
+    return para2;
+  }
+
+  const runEnd = para2.indexOf("</w:r>", labelEnd) + "</w:r>".length;
+  const nextText = para2
+    .slice(runEnd)
+    .match(/<w:t(?: [^>]*)?>([^<]*)<\/w:t>/);
+
+  if (nextText && nextText[1] === " ") {
+    return para2;
+  }
+
+  return para2.slice(0, runEnd) + ARIAL_SPACE_RUN + para2.slice(runEnd);
 }
 
 function updateLotAndDateRuns(content: string, lotCode: string, bestBefore: string): string {
@@ -106,12 +142,13 @@ function updateLotAndDateRuns(content: string, lotCode: string, bestBefore: stri
   // a positional index across all digit/slash runs within this paragraph only.
   const dateValues = [date.slice(0, 4), "", "/", date.slice(5, 7), "/", date.slice(8, 10)];
   let dateIndex = 0;
-  const para2 = content.slice(para1End, para2End).replace(TEXT_TAG, (tag) => {
+  let para2 = content.slice(para1End, para2End).replace(TEXT_TAG, (tag) => {
     const value = textValue(tag);
     if (!/^\d{1,4}$|^\/$/.test(value)) return tag;
     const replacement = dateValues[dateIndex++] ?? "";
     return replaceTextTag(tag, replacement);
   });
+  para2 = ensureSpaceAfterBestBeforeLabel(para2);
 
   return para1 + para2 + content.slice(para2End);
 }
@@ -136,15 +173,15 @@ function updateIngredientsRuns(content: string, ingredients: string): string {
   });
 }
 
-function updateProductFontSize(content: string, productName: string): string {
-  const fontSize = productName.length > 26 ? 30 : productName.length > 18 ? 36 : 42;
+function applyFontSize(content: string, fontSize: number): string {
   return content
     .replace(/<w:sz w:val="\d+"\/>/g, `<w:sz w:val="${fontSize}"/>`)
     .replace(/<w:szCs w:val="\d+"\/>/g, `<w:szCs w:val="${fontSize}"/>`);
 }
 
 function updateIngredientFontSize(content: string, ingredients: string): string {
-  if (ingredients.length <= 120) {
+  const fontSize = pickIngredientFontSize(ingredients);
+  if (fontSize >= INGREDIENTS_FONT_MAX_HALF_POINTS) {
     return content;
   }
   const valueStart = content.indexOf("Ingredients:");
@@ -154,9 +191,10 @@ function updateIngredientFontSize(content: string, ingredients: string): string 
   }
   const labelEnd = content.indexOf("</w:t>", valueStart) + "</w:t>".length;
   const beforeValue = content.slice(0, labelEnd);
-  const value = content.slice(labelEnd, valueEnd)
-    .replace(/<w:sz w:val="20"\/>/g, '<w:sz w:val="18"/>')
-    .replace(/<w:szCs w:val="20"\/>/g, '<w:szCs w:val="18"/>');
+  const value = content
+    .slice(labelEnd, valueEnd)
+    .replace(/<w:sz w:val="\d+"\/>/g, `<w:sz w:val="${fontSize}"/>`)
+    .replace(/<w:szCs w:val="\d+"\/>/g, `<w:szCs w:val="${fontSize}"/>`);
   return beforeValue + value + content.slice(valueEnd);
 }
 

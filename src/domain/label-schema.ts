@@ -36,7 +36,9 @@ export type ValidationErrorCode =
   | "BEST_BEFORE_INVALID"
   | "BARCODE_NOT_FOUND"
   | "BARCODE_UNREADABLE"
-  | "BARCODE_VALUE_MISMATCH";
+  | "BARCODE_VALUE_MISMATCH"
+  | "LOT_MISMATCH"
+  | "BEST_BEFORE_MISMATCH";
 
 export class LabelValidationError extends Error {
   readonly code: ValidationErrorCode;
@@ -57,8 +59,14 @@ export type LabelScanResult = {
   expectedGtin: string;
   expectedLotCode: string;
   expectedBestBefore: string;
+  expectedIngredients: string;
+  expectedStorageInstruction: string;
   expectedBarcodeText: string;
+  /** Full expected barcode number with parentheses/AI delimiters stripped. */
+  expectedBarcodeNumber: string | null;
   scannedRaw: string | null;
+  /** Full scanned barcode number with parentheses/AI delimiters stripped. */
+  scannedBarcodeNumber: string | null;
   scannedGtin: string | null;
   scannedLotCode: string | null;
   scannedBestBefore: string | null;
@@ -71,6 +79,7 @@ export type LabelScanResult = {
     expected: string;
     actual: string;
     message: string;
+    code?: ValidationErrorCode;
   }>;
   widthEmu?: number;
   heightEmu?: number;

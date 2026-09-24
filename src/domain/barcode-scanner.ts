@@ -7,7 +7,9 @@ import {
   BinaryBitmap,
   HybridBinarizer,
 } from "@zxing/library";
+import { toBarcodeNumber } from "@/domain/gs1";
 import { LabelScanResult, ScanStatus } from "@/domain/label-schema";
+import { LABEL_TEMPLATE } from "@/domain/label-template";
 
 const HINTS = new Map<DecodeHintType, unknown>([
   [DecodeHintType.TRY_HARDER, true],
@@ -16,6 +18,7 @@ const HINTS = new Map<DecodeHintType, unknown>([
 export type ScannedBarcode = {
   mediaPath: string;
   rawText: string;
+  barcodeNumber: string;
   parsedGtin: string | null;
   parsedBestBefore: string | null;
   parsedLotCode: string | null;
@@ -117,6 +120,7 @@ export async function scanDocxLabel(
       barcodeMatch = {
         mediaPath,
         rawText: decoded.text,
+        barcodeNumber: toBarcodeNumber(decoded.text),
         parsedGtin: parsed.gtin,
         parsedBestBefore: parsed.bestBefore,
         parsedLotCode: parsed.lotCode,
@@ -129,6 +133,18 @@ export async function scanDocxLabel(
   }
 
   return evaluateScanResult(filename, extracted, barcodeMatch);
+}
+
+function extractTextBoxText(documentXml: string, boxName: string): string {
+  const match = documentXml.match(
+    new RegExp(
+      `<wp:docPr[^>]+name="${boxName}"[\\s\\S]*?<w:txbxContent>([\\s\\S]*?)<\\/w:txbxContent>`,
+    ),
+  );
+  if (!match) {
+    return "";
+  }
+  return match[1].replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
 }
 
 function extractFieldsFromDocument(documentXml: string) {
@@ -166,21 +182,9 @@ function extractFieldsFromDocument(documentXml: string) {
   }
 
   // Extract Product Name
-  let productName = "";
-  // Check Text Box 2
-  const tb2Match = documentXml.match(
-    /<wp:docPr[^>]+name="Text Box 2"[\s\S]*?<w:txbxContent>([\s\S]*?)<\/w:txbxContent>/,
-  );
-  if (tb2Match) {
-    productName = tb2Match[1]
-      .replace(/<[^>]+>/g, "")
-      .replace(/\s+/g, " ")
-      .trim();
-  } else {
+  let productName = extractTextBoxText(documentXml, LABEL_TEMPLATE.textBoxes.productName);
+  if (!productName) {
     // Check paragraphs: in Issue docx, title is usually the 2nd paragraph after company header
-    const paragraphs = (documentXml.match(/<w:p[\s\S]*?<\/w:p>/g) || []).map((p) =>
-      p.replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim(),
-    );
     const nonHeader = paragraphs.filter(
       (p) =>
         p &&
@@ -197,6 +201,16 @@ function extractFieldsFromDocument(documentXml: string) {
   const itemMatch = cleanText.match(/ITEM\s*#?\s*([A-Za-z0-9]+)/i);
   const itemNumber = itemMatch ? itemMatch[1] : "";
 
+  // Extract storage instruction and ingredients so repairs preserve them
+  const storageInstruction = extractTextBoxText(
+    documentXml,
+    LABEL_TEMPLATE.textBoxes.storageInstruction,
+  );
+  const ingredients = extractTextBoxText(
+    documentXml,
+    LABEL_TEMPLATE.textBoxes.ingredients,
+  ).replace(/^Ingredients:\s*/i, "");
+
   const expectedBarcodeText = expectedGtin
     ? `(01)${expectedGtin}${expectedBestBefore ? `(15)${expectedBestBefore.replaceAll("-", "").slice(2)}` : ""}${expectedLotCode ? `(10)${expectedLotCode}` : ""}`
     : cleanText.match(/\(01\)\d{14}[^\s<]*/)?.[0] || "";
@@ -207,7 +221,10 @@ function extractFieldsFromDocument(documentXml: string) {
     expectedGtin,
     expectedLotCode,
     expectedBestBefore,
+    expectedIngredients: ingredients,
+    expectedStorageInstruction: storageInstruction,
     expectedBarcodeText,
+    expectedBarcodeNumber: expectedBarcodeText ? toBarcodeNumber(expectedBarcodeText) : null,
   };
 }
 
@@ -287,35 +304,47 @@ function evaluateScanResult(
 ): LabelScanResult {
   const mismatches: LabelScanResult["mismatches"] = [];
 
+  const baseResult = {
+    filename,
+    productName: extracted.productName,
+    itemNumber: extracted.itemNumber,
+    expectedGtin: extracted.expectedGtin,
+    expectedLotCode: extracted.expectedLotCode,
+    expectedBestBefore: extracted.expectedBestBefore,
+    expectedIngredients: extracted.expectedIngredients,
+    expectedStorageInstruction: extracted.expectedStorageInstruction,
+    expectedBarcodeText: extracted.expectedBarcodeText,
+    expectedBarcodeNumber: extracted.expectedBarcodeNumber,
+    barcodeMediaFile: barcode?.mediaPath ?? null,
+    barcodeImageBase64: barcode?.imageBase64 ?? null,
+  };
+
   if (!barcode) {
     return {
-      filename,
-      productName: extracted.productName,
-      itemNumber: extracted.itemNumber,
-      expectedGtin: extracted.expectedGtin,
-      expectedLotCode: extracted.expectedLotCode,
-      expectedBestBefore: extracted.expectedBestBefore,
-      expectedBarcodeText: extracted.expectedBarcodeText,
+      ...baseResult,
       scannedRaw: null,
+      scannedBarcodeNumber: null,
       scannedGtin: null,
       scannedLotCode: null,
       scannedBestBefore: null,
-      barcodeMediaFile: null,
-      barcodeImageBase64: null,
       status: "error",
       detail: "No scannable 1D barcode was detected in the document images.",
       mismatches: [
         {
           field: "Barcode Artwork",
-          expected: extracted.expectedGtin || "Scannable GTIN barcode",
+          expected: extracted.expectedBarcodeNumber || "Scannable GTIN barcode",
           actual: "Not detected",
           message: "Barcode image is missing or unreadable.",
+          code: "BARCODE_NOT_FOUND",
         },
       ],
     };
   }
 
-  const { parsedGtin, parsedBestBefore, parsedLotCode, rawText } = barcode;
+  const { parsedGtin, parsedBestBefore, parsedLotCode, rawText, barcodeNumber } = barcode;
+
+  // The number written on the document is the truth. Every expected component
+  // must be present in the scanned artwork and match exactly.
 
   // GTIN check
   if (extracted.expectedGtin && parsedGtin) {
@@ -325,6 +354,7 @@ function evaluateScanResult(
         expected: extracted.expectedGtin,
         actual: parsedGtin,
         message: `Scanned GTIN ${parsedGtin} does not match expected ${extracted.expectedGtin}.`,
+        code: "BARCODE_VALUE_MISMATCH",
       });
     }
   } else if (extracted.expectedGtin && !parsedGtin) {
@@ -333,53 +363,84 @@ function evaluateScanResult(
       expected: extracted.expectedGtin,
       actual: rawText,
       message: `Could not parse valid GTIN from scanned text: "${rawText}".`,
+      code: "BARCODE_UNREADABLE",
     });
   }
 
-  // Date check (only if barcode encoded a date)
-  if (extracted.expectedBestBefore && parsedBestBefore) {
-    if (extracted.expectedBestBefore !== parsedBestBefore) {
+  // Best-before check (written date is the truth; a missing scanned date is an error)
+  if (extracted.expectedBestBefore) {
+    if (!parsedBestBefore) {
+      mismatches.push({
+        field: "Best Before Date",
+        expected: extracted.expectedBestBefore,
+        actual: "Missing from barcode",
+        message:
+          "The barcode artwork does not contain a best-before date ((15) AI) matching the written label date.",
+        code: "BEST_BEFORE_MISMATCH",
+      });
+    } else if (parsedBestBefore !== extracted.expectedBestBefore) {
       mismatches.push({
         field: "Best Before Date",
         expected: extracted.expectedBestBefore,
         actual: parsedBestBefore,
         message: `Scanned date ${parsedBestBefore} does not match expected ${extracted.expectedBestBefore}.`,
+        code: "BEST_BEFORE_MISMATCH",
       });
     }
   }
 
-  // Lot check (only if barcode encoded a lot)
-  if (extracted.expectedLotCode && parsedLotCode) {
-    if (extracted.expectedLotCode !== parsedLotCode) {
+  // Lot check (written lot is the truth; a missing scanned lot is an error)
+  if (extracted.expectedLotCode) {
+    if (!parsedLotCode) {
+      mismatches.push({
+        field: "Lot Code",
+        expected: extracted.expectedLotCode,
+        actual: "Missing from barcode",
+        message:
+          "The barcode artwork does not contain a lot code ((10) AI) matching the written label lot.",
+        code: "LOT_MISMATCH",
+      });
+    } else if (parsedLotCode !== extracted.expectedLotCode) {
       mismatches.push({
         field: "Lot Code",
         expected: extracted.expectedLotCode,
         actual: parsedLotCode,
         message: `Scanned lot ${parsedLotCode} does not match expected ${extracted.expectedLotCode}.`,
+        code: "LOT_MISMATCH",
       });
     }
+  }
+
+  // Full barcode number check catches any remaining difference (extra or
+  // missing AIs, truncated values, swapped components) even when each parsed
+  // component individually matches.
+  if (
+    extracted.expectedBarcodeNumber &&
+    barcodeNumber &&
+    extracted.expectedBarcodeNumber !== barcodeNumber
+  ) {
+    mismatches.push({
+      field: "Full Barcode Number",
+      expected: extracted.expectedBarcodeNumber,
+      actual: barcodeNumber,
+      message: `Scanned barcode number ${barcodeNumber} does not equal the written barcode number ${extracted.expectedBarcodeNumber}.`,
+      code: "BARCODE_VALUE_MISMATCH",
+    });
   }
 
   const status: ScanStatus = mismatches.length > 0 ? "attention" : "ready";
   const detail =
     mismatches.length > 0
       ? mismatches.map((m) => m.message).join(" ")
-      : "Scanned barcode matches expected GTIN and product data.";
+      : "Scanned barcode matches the written barcode number, lot code, and best-before date.";
 
   return {
-    filename,
-    productName: extracted.productName,
-    itemNumber: extracted.itemNumber,
-    expectedGtin: extracted.expectedGtin,
-    expectedLotCode: extracted.expectedLotCode,
-    expectedBestBefore: extracted.expectedBestBefore,
-    expectedBarcodeText: extracted.expectedBarcodeText,
+    ...baseResult,
     scannedRaw: rawText,
+    scannedBarcodeNumber: barcodeNumber,
     scannedGtin: parsedGtin,
     scannedLotCode: parsedLotCode,
     scannedBestBefore: parsedBestBefore,
-    barcodeMediaFile: barcode.mediaPath,
-    barcodeImageBase64: barcode.imageBase64,
     status,
     detail,
     mismatches,
@@ -396,8 +457,12 @@ function createErrorResult(filename: string, message: string): LabelScanResult {
     expectedGtin: "",
     expectedLotCode: "",
     expectedBestBefore: "",
+    expectedIngredients: "",
+    expectedStorageInstruction: "",
     expectedBarcodeText: "",
+    expectedBarcodeNumber: null,
     scannedRaw: null,
+    scannedBarcodeNumber: null,
     scannedGtin: null,
     scannedLotCode: null,
     scannedBestBefore: null,

@@ -28,7 +28,9 @@ These observations must be verified with automated fixtures before implementatio
 - Phase 1 GS1/GTIN domain validation: implemented and covered by unit tests.
 - Initial Create/Inspect workbench: implemented with browser smoke coverage.
 - Barcode PNG and exact sample-template 6x4 DOCX generation: implemented and package-tested. The writer preserves the sample package and replaces only scoped text and barcode media.
-- Barcode decode, DOCX repair mutation, resizable repair editor, and batch scan API: next implementation slice.
+- Barcode decode and batch scan API: implemented. Inspection treats the written barcode number as the truth and fully compares the scanned artwork — GTIN, best-before `(15)`, lot `(10)`, and the complete paren-stripped barcode number — with missing components reported as errors carrying stable codes (`BARCODE_VALUE_MISMATCH`, `BEST_BEFORE_MISMATCH`, `LOT_MISMATCH`, `BARCODE_NOT_FOUND`, `BARCODE_UNREADABLE`).
+- Template placeholders centralized in `src/domain/label-template.ts` (text-box names, media paths, EMU geometry) and auto-fit typography in `src/domain/label-typography.ts` (two-line title shrinking, progressive ingredient shrinking), both unit-tested.
+- Repair: single and batch repair regenerate the full label from the template using the scanned expected values (including ingredients and storage instruction), and correction UI is hidden for verified labels.
 
 ## 3. Recommended architecture
 
@@ -152,18 +154,18 @@ Use a focused production workbench rather than a marketing landing page:
 
 ## 8. Definition of done
 
-- [ ] User can enter an editable barcode number and all label fields.
-- [ ] GTIN check digit and allowed input format are validated before generation.
-- [ ] Encoded barcode data contains no parentheses and rendered barcode has no digits beneath it.
-- [ ] Generated DOCX matches the supplied 6x4 label geometry and preserves template assets.
-- [ ] Multiple DOCX labels can be uploaded and inspected independently.
-- [ ] Dashboard shows counts and identifies labels needing attention.
-- [ ] User can navigate labels one by one and see exact field-level errors.
-- [ ] User can resize/reposition the barcode rectangle within the label bounds.
-- [ ] Repair removes/replaces the old barcode and verifies the new artwork by decoding it.
-- [ ] Output DOCX can be downloaded and reopened.
-- [ ] Tests cover valid, invalid, mismatched, unreadable, and malformed-document cases.
-- [ ] README documents local setup, test commands, deployment assumptions, and privacy behavior.
+- [x] User can enter an editable barcode number and all label fields.
+- [x] GTIN check digit and allowed input format are validated before generation.
+- [x] Encoded barcode data contains no parentheses and rendered barcode has no digits beneath it.
+- [x] Generated DOCX matches the supplied 6x4 label geometry and preserves template assets.
+- [x] Multiple DOCX labels can be uploaded and inspected independently.
+- [x] Dashboard shows counts and identifies labels needing attention.
+- [x] User can navigate labels one by one and see exact field-level errors.
+- [x] User can resize/reposition the barcode rectangle within the label bounds.
+- [x] Repair removes/replaces the old barcode and verifies the new artwork by decoding it.
+- [x] Output DOCX can be downloaded and reopened.
+- [x] Tests cover valid, invalid, mismatched, unreadable, and malformed-document cases.
+- [x] README documents local setup, test commands, deployment assumptions, and privacy behavior.
 
 ## 9. Open decisions to resolve before coding the UI
 

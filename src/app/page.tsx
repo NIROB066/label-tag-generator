@@ -1,16 +1,8 @@
 "use client";
 
 import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
-import { buildGs1Payload } from "@/domain/gs1";
+import { buildGs1Payload, toBarcodeNumber } from "@/domain/gs1";
 import { LabelScanResult } from "@/domain/label-schema";
-
-/**
- * Converts GS1 parenthesised form to the raw numeric string scanners emit.
- * e.g. "(01)10627146285749(15)250923(10)72722" → "0110627146285749152509231072722"
- */
-function stripGS1Parens(raw: string): string {
-  return raw.replace(/[()]/g, "");
-}
 
 type Mode = "create" | "inspect";
 
@@ -22,14 +14,25 @@ type InspectionRow = {
   isRepaired?: boolean;
 };
 
+// The Create form starts empty; every field shows an example placeholder
+// instead of pre-filled hardcoded sample data.
 const initialForm = {
-  productName: "Lava Cake 3 Inch",
-  itemNumber: "GP2118",
-  gtin: "10627146285749",
-  lotCode: "72722",
-  bestBefore: "2025-09-23",
-  ingredients: "Eggs, sugar, wheat flour, margarine, dark chocolate.",
-  storageInstruction: "KEEP FROZEN",
+  productName: "",
+  itemNumber: "",
+  gtin: "",
+  lotCode: "",
+  bestBefore: "",
+  ingredients: "",
+  storageInstruction: "",
+};
+
+const formPlaceholders = {
+  productName: "e.g. Lava Cake 3 Inch",
+  itemNumber: "e.g. GP2118",
+  gtin: "e.g. 10627146285749",
+  lotCode: "e.g. 72722",
+  ingredients: "e.g. Eggs, sugar, wheat flour, margarine, dark chocolate.",
+  storageInstruction: "e.g. KEEP FROZEN",
 };
 
 export default function Home() {
@@ -68,6 +71,12 @@ export default function Home() {
     let objectUrl: string | null = null;
 
     async function loadBarcodePreview() {
+      // Skip the request until the barcode payload fields have values.
+      if (!form.gtin.trim() || !form.bestBefore || !form.lotCode.trim()) {
+        setBarcodePreviewUrl(null);
+        return;
+      }
+
       try {
         const response = await fetch("/api/labels/barcode", {
           method: "POST",
@@ -109,16 +118,20 @@ export default function Home() {
     };
   }, [rows]);
 
-  // Sync box dimensions with selected row if available
-  useEffect(() => {
-    if (selectedRow?.scanResult.widthEmu && selectedRow?.scanResult.heightEmu) {
+  // Sync box dimensions with the selected row. Adjusting state during render
+  // (guarded by the row id) is the React-recommended pattern for deriving
+  // state from a changed selection without cascading effects.
+  const [lastSyncedRowId, setLastSyncedRowId] = useState("");
+  if (selectedRow && selectedRow.id !== lastSyncedRowId) {
+    setLastSyncedRowId(selectedRow.id);
+    if (selectedRow.scanResult.widthEmu && selectedRow.scanResult.heightEmu) {
       // 1 EMU = 1 / 914400 inch; at 96 DPI: 1px = 9525 EMUs
       const w = Math.round(selectedRow.scanResult.widthEmu / 9525);
       const h = Math.round(selectedRow.scanResult.heightEmu / 9525);
       if (w >= 100 && w <= 400) setBoxWidth(w);
       if (h >= 30 && h <= 200) setBoxHeight(h);
     }
-  }, [selectedRow?.id, selectedRow?.scanResult.widthEmu, selectedRow?.scanResult.heightEmu]);
+  }
 
   // Handle Multi-file Upload and Real Scanning
   async function handleUpload(event: ChangeEvent<HTMLInputElement>) {
@@ -206,6 +219,8 @@ export default function Home() {
       data.append("gtin", row.scanResult.expectedGtin);
       data.append("lotCode", row.scanResult.expectedLotCode);
       data.append("bestBefore", row.scanResult.expectedBestBefore);
+      data.append("ingredients", row.scanResult.expectedIngredients);
+      data.append("storageInstruction", row.scanResult.expectedStorageInstruction);
       if (row.scanResult.barcodeMediaFile) {
         data.append("barcodeMediaFile", row.scanResult.barcodeMediaFile);
       }
@@ -367,6 +382,12 @@ export default function Home() {
   }
 
   async function generateDocument() {
+    if (!form.productName.trim()) {
+      setFormMessage("Enter a product name before generating the label.");
+      setToastMessage("Enter a product name before generating the label.");
+      return;
+    }
+
     setIsGenerating(true);
     setFormMessage("Building the DOCX label and barcode...");
 
@@ -427,10 +448,12 @@ export default function Home() {
 
       <section className="hero-row">
         <div>
-          <p className="eyebrow">Production desk / 01</p>
-          <h2>Scan, verify & fix label barcodes.</h2>
+          <p className="eyebrow">Label operations</p>
+          <h2>Print-ready labels with barcodes you can trust.</h2>
           <p className="hero-copy">
-            Upload multiple DOCX labels. The engine automatically scans the actual barcode artwork, matches it against the expected barcode number, and replaces any mismatches cleanly.
+            Fill in the product details to build a Canada-compliant GS1 label, or upload existing
+            label files and let the scanner verify every barcode number, lot code, and best-before
+            date against what is written on the label.
           </p>
         </div>
         <div className="mode-switch" role="tablist" aria-label="Workflow mode">
@@ -440,7 +463,11 @@ export default function Home() {
             role="tab"
             aria-selected={mode === "create"}
           >
-            Create label
+            <span className="mode-step" aria-hidden="true">1</span>
+            <span className="mode-text">
+              <strong>Create a label</strong>
+              <small>Fill in details, download a DOCX</small>
+            </span>
           </button>
           <button
             className={mode === "inspect" ? "mode-button active" : "mode-button"}
@@ -448,19 +475,23 @@ export default function Home() {
             role="tab"
             aria-selected={mode === "inspect"}
           >
-            Inspect & fix batch
+            <span className="mode-step" aria-hidden="true">2</span>
+            <span className="mode-text">
+              <strong>Check &amp; fix labels</strong>
+              <small>Upload files, scan barcodes, repair</small>
+            </span>
           </button>
         </div>
       </section>
 
       <section className="metrics" aria-label="Batch summary">
-        <Metric label="In queue" value={counts.total} accent="ink" />
-        <Metric label="Needs attention / Mismatched" value={counts.attention} accent="coral" />
-        <Metric label="Ready to print" value={counts.ready} accent="mint" />
+        <Metric label="Labels in queue" value={counts.total} accent="ink" />
+        <Metric label="Need fixing" value={counts.attention} accent="coral" />
+        <Metric label="Verified &amp; ready" value={counts.ready} accent="mint" />
         <div className="metric metric-note">
-          <span className="metric-label">Engine</span>
-          <strong>Barcode 1D Scanner</strong>
-          <span className="metric-sub">GS1 / Code 128 verify</span>
+          <span className="metric-label">Checks performed</span>
+          <strong>GTIN + Date + Lot</strong>
+          <span className="metric-sub">Full barcode number compare</span>
         </div>
       </section>
 
@@ -475,15 +506,15 @@ export default function Home() {
               <span className="step-chip">01 / 02</span>
             </div>
             <div className="form-grid">
-              <Field label="Product name" value={form.productName} onChange={(v) => updateForm("productName", v)} />
-              <Field label="Item number" value={form.itemNumber} onChange={(v) => updateForm("itemNumber", v)} />
-              <Field label="GTIN / barcode number" value={form.gtin} onChange={(v) => updateForm("gtin", v)} wide inputMode="numeric" />
-              <Field label="Lot code" value={form.lotCode} onChange={(v) => updateForm("lotCode", v)} />
-              <Field label="Best before" value={form.bestBefore} onChange={(v) => updateForm("bestBefore", v)} type="date" />
-              <Field label="Storage instruction" value={form.storageInstruction} onChange={(v) => updateForm("storageInstruction", v)} wide />
+              <Field label="Product name" value={form.productName} onChange={(v) => updateForm("productName", v)} placeholder={formPlaceholders.productName} />
+              <Field label="Item number" value={form.itemNumber} onChange={(v) => updateForm("itemNumber", v)} placeholder={formPlaceholders.itemNumber} />
+              <Field label="GTIN / barcode number" value={form.gtin} onChange={(v) => updateForm("gtin", v)} wide inputMode="numeric" placeholder={formPlaceholders.gtin} />
+              <Field label="Lot code" value={form.lotCode} onChange={(v) => updateForm("lotCode", v)} placeholder={formPlaceholders.lotCode} />
+              <DateField label="Best before" value={form.bestBefore} onChange={(v) => updateForm("bestBefore", v)} placeholder="e.g. 2025-09-23" hint="Type YYYY-MM-DD or use the calendar" />
+              <Field label="Storage instruction" value={form.storageInstruction} onChange={(v) => updateForm("storageInstruction", v)} wide placeholder={formPlaceholders.storageInstruction} />
               <label className="field wide">
                 <span>Ingredients</span>
-                <textarea value={form.ingredients} onChange={(e) => updateForm("ingredients", e.target.value)} rows={4} />
+                <textarea value={form.ingredients} onChange={(e) => updateForm("ingredients", e.target.value)} rows={4} placeholder={formPlaceholders.ingredients} />
               </label>
             </div>
             <div className="form-footer">
@@ -521,7 +552,7 @@ export default function Home() {
                 <h3>Label queue</h3>
               </div>
               <label className="upload-button">
-                {isScanning ? "Scanning..." : "Upload DOCX labels"}
+                {isScanning ? "Scanning..." : "Upload labels (.docx)"}
                 <input
                   type="file"
                   accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -589,7 +620,6 @@ export default function Home() {
                 rows.map((row) => {
                   const isReady = row.scanResult.status === "ready" || row.isRepaired;
                   const isAttention = row.scanResult.status === "attention" && !row.isRepaired;
-                  const isError = row.scanResult.status === "error" && !row.isRepaired;
 
                   return (
                     <div
@@ -616,9 +646,9 @@ export default function Home() {
                           <small>
                             {row.filename} &bull; Expected GTIN: {row.scanResult.expectedGtin || "None"}
                           </small>
-                          {row.scanResult.scannedGtin && (
+                          {row.scanResult.scannedBarcodeNumber && (
                             <span className="scanned-badge">
-                              Scanned: <code>{row.scanResult.scannedGtin}</code>
+                              Scanned: <code>{row.scanResult.scannedBarcodeNumber}</code>
                             </span>
                           )}
                         </span>
@@ -770,9 +800,9 @@ function InspectionDetail({
         <div className="comparison-grid">
           {/* Expected Barcode */}
           <div className="comparison-column">
-            <span className="col-label">Authoritative Expected Number</span>
+            <span className="col-label">Written on label (source of truth)</span>
             <div className="value-display expected">
-              <strong>{scanResult.expectedGtin || "Not detected in document"}</strong>
+              <strong>{scanResult.expectedBarcodeNumber || scanResult.expectedGtin || "Not detected in document"}</strong>
               <small>{scanResult.expectedBarcodeText || "Standard GS1 format"}</small>
             </div>
             <div className="meta-sub">
@@ -792,12 +822,11 @@ function InspectionDetail({
 
           {/* Scanned Barcode */}
           <div className="comparison-column">
-            <span className="col-label">Actual Scanned Barcode Artwork</span>
+            <span className="col-label">Scanned from barcode artwork</span>
             <div className={`value-display scanned ${isMatch ? "match" : "mismatch"}`}>
               <strong>
-                {scanResult.scannedRaw
-                  ? stripGS1Parens(scanResult.scannedRaw)
-                  : scanResult.scannedGtin || "Unreadable"}
+                {scanResult.scannedBarcodeNumber ||
+                  (scanResult.scannedRaw ? toBarcodeNumber(scanResult.scannedRaw) : "Unreadable")}
               </strong>
               <small>{scanResult.scannedRaw || "Barcode scanner result"}</small>
             </div>
@@ -817,18 +846,22 @@ function InspectionDetail({
         {/* Mismatch Alert / Success Callout */}
         {isMatch ? (
           <div className="success-callout">
-            <strong>Barcode Matches Correctly</strong>
+            <strong>Barcode verified - no correction needed</strong>
             <p>
-              The embedded barcode scans to GTIN {scanResult.expectedGtin}. No replacement is required.
+              The scanned barcode number <code>{scanResult.scannedBarcodeNumber}</code> matches the
+              written barcode number, lot code, and best-before date exactly. This label is ready to
+              print as-is.
             </p>
           </div>
         ) : (
           <div className="error-callout">
             <span className="error-symbol">!</span>
             <div>
-              <strong>Barcode Mismatch Detected</strong>
+              <strong>Barcode mismatch detected</strong>
               <p>
-                The scanned barcode artwork ({scanResult.scannedGtin || "unreadable"}) does not match the expected barcode number ({scanResult.expectedGtin}).
+                The scanned barcode number ({scanResult.scannedBarcodeNumber || "unreadable"}) does
+                not match the written barcode number ({scanResult.expectedBarcodeNumber || scanResult.expectedGtin}).
+                Every difference below will be corrected when you replace the barcode.
               </p>
               {scanResult.mismatches.map((m, idx) => (
                 <p key={idx} className="mismatch-detail-line">
@@ -840,7 +873,18 @@ function InspectionDetail({
         )}
       </div>
 
-      {/* Resizable Barcode Box Editor & Fix Workspace */}
+      {/* Correction tools are hidden when the label already verified - nothing to fix */}
+      {isMatch ? (
+        <div className="repair-box-workspace">
+          <div className="verified-tools-note">
+            <strong>Correction tools hidden</strong>
+            <p>
+              This label passed every check (barcode number, lot code, and best-before date), so
+              there is nothing to repair, replace, or resize.
+            </p>
+          </div>
+        </div>
+      ) : (
       <div className="repair-box-workspace">
         <div className="repair-box-header">
           <div>
@@ -923,7 +967,81 @@ function InspectionDetail({
           {repairMessage ? <p className="repair-message">{repairMessage}</p> : null}
         </div>
       </div>
+      )}
     </>
+  );
+}
+
+function DateField({
+  label,
+  value,
+  onChange,
+  placeholder,
+  hint,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+  hint?: string;
+}) {
+  const dateInputRef = useRef<HTMLInputElement>(null);
+
+  function openPicker() {
+    const input = dateInputRef.current;
+    if (!input) return;
+
+    if (typeof input.showPicker === "function") {
+      try {
+        input.showPicker();
+        return;
+      } catch {
+        // Fall through to focus fallback.
+      }
+    }
+    input.focus();
+  }
+
+  function handlePicked(event: ChangeEvent<HTMLInputElement>) {
+    if (event.target.value) {
+      onChange(event.target.value);
+    }
+  }
+
+  return (
+    <label className="field">
+      <span>{label}</span>
+      <span className="date-input-row">
+        <input
+          type="text"
+          value={value}
+          placeholder={placeholder}
+          onChange={(event) => onChange(event.target.value)}
+        />
+        <button
+          type="button"
+          className="calendar-button"
+          onClick={openPicker}
+          aria-label="Pick best-before date from calendar"
+          title="Pick from calendar"
+        >
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
+            <rect x="1.5" y="3" width="13" height="11.5" rx="1" />
+            <path d="M1.5 6.5h13M5 1.5v3M11 1.5v3" />
+          </svg>
+        </button>
+        <input
+          ref={dateInputRef}
+          type="date"
+          className="hidden-date-input"
+          value={/^\d{4}-\d{2}-\d{2}$/.test(value) ? value : ""}
+          onChange={handlePicked}
+          tabIndex={-1}
+          aria-hidden="true"
+        />
+      </span>
+      {hint ? <small className="field-hint">{hint}</small> : null}
+    </label>
   );
 }
 
@@ -942,25 +1060,29 @@ function Field({
   value,
   onChange,
   wide = false,
-  type = "text",
   inputMode,
+  placeholder,
+  hint,
 }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
   wide?: boolean;
-  type?: string;
   inputMode?: "numeric";
+  placeholder?: string;
+  hint?: string;
 }) {
   return (
     <label className={wide ? "field wide" : "field"}>
       <span>{label}</span>
       <input
-        type={type}
+        type="text"
         inputMode={inputMode}
         value={value}
+        placeholder={placeholder}
         onChange={(event) => onChange(event.target.value)}
       />
+      {hint ? <small className="field-hint">{hint}</small> : null}
     </label>
   );
 }
@@ -987,16 +1109,17 @@ function PdfLabelPreview({
   return (
     <div className="pdf-page">
       <img className="preview-logo" src="/api/labels/logo" alt="Template logo" />
-      <div className="preview-title">{productName}</div>
-      <div className="preview-item">ITEM #{itemNumber}</div>
-      <div className="preview-storage">{storageInstruction}</div>
+      <div className="preview-title">{productName || "Your product name"}</div>
+      <div className="preview-item">ITEM #{itemNumber || "—"}</div>
+      <div className="preview-storage">{storageInstruction || "STORAGE"}</div>
       <div className="preview-lot">
-        LOT CODE: {lotCode}
+        LOT CODE: {lotCode || "—"}
         <br />
-        BEST BEFORE: {bestBefore.replaceAll("-", "/")}
+        BEST BEFORE: {bestBefore ? bestBefore.replaceAll("-", "/") : "—"}
       </div>
       <div className="preview-ingredients">
-        <strong>Ingredients:</strong> {ingredients}
+        <strong>Ingredients:</strong>{" "}
+        {ingredients || "Ingredient list appears here as you type"}
       </div>
       <div className="preview-barcode">
         {barcodePreviewUrl ? (
@@ -1004,9 +1127,13 @@ function PdfLabelPreview({
         ) : (
           <span className="barcode-placeholder">Barcode preview</span>
         )}
-        <small>
-          (01){gtin}(15){bestBefore.replaceAll("-", "").slice(2)}(10){lotCode}
-        </small>
+        {gtin && bestBefore && lotCode ? (
+          <small>
+            (01){gtin}(15){bestBefore.replaceAll("-", "").slice(2)}(10){lotCode}
+          </small>
+        ) : (
+          <small>The barcode number appears here once GTIN, date, and lot are filled in</small>
+        )}
       </div>
       <div className="preview-address">
         <strong>Gastronomique pastry INC</strong>

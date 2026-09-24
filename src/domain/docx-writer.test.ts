@@ -6,6 +6,10 @@ import { buildGs1Payload } from "@/domain/gs1";
 import { generateGs1BarcodePng } from "@/domain/barcode";
 import { inspectDocx } from "@/domain/docx-reader";
 import { generateLabelDocxFromTemplate } from "@/domain/docx-writer";
+import {
+  pickIngredientFontSize,
+  pickTitleFontSize,
+} from "@/domain/label-typography";
 
 const input = {
   productName: "Lava Cake 3 Inch",
@@ -33,6 +37,7 @@ describe("DOCX label generation", () => {
     });
     expect(inspection.documentText).toContain("Lava Cake 3 Inch");
     expect(inspection.documentText).toContain("LOT CODE: 72722");
+    expect(inspection.documentText).toContain("BEST BEFORE: 2025/09/23");
     expect(inspection.documentText).toContain("(01)10627146285749(15)250923(10)72722");
     expect(inspection.images).toHaveLength(2);
     expect(inspection.textBoxes.map((box) => box.name)).toEqual(
@@ -84,8 +89,48 @@ describe("DOCX label generation", () => {
     const productBox = namedAnchor(xml ?? "", "Text Box 2");
 
     expect(ingredientsBox).toContain('<wp:extent cx="3211195" cy="1508760"/>');
+    expect(ingredientsBox).toContain(`<w:sz w:val="${pickIngredientFontSize(longInput.ingredients)}"/>`);
     expect(ingredientsBox).toContain('<w:sz w:val="18"/>');
-    expect(productBox).toContain('<w:sz w:val="30"/>');
+    // The title auto-shrinks to the largest size that fits two wrapped lines.
+    expect(productBox).toContain(`<w:sz w:val="${pickTitleFontSize(longInput.productName)}"/>`);
+    expect(pickTitleFontSize(longInput.productName)).toBeLessThan(42);
+  });
+
+  it("auto-shrinks an extra-long title further and keeps it at or above the floor", async () => {
+    const barcode = await generateGs1BarcodePng(buildGs1Payload(input));
+    const template = await readFile(path.join(process.cwd(), "sample", "Lava Cake Label 6''x4''.docx"));
+    const hugeTitleInput = {
+      ...input,
+      productName:
+        "Chocolate Raspberry Cheesecake Dessert Cups with Whipped Cream Topping",
+    };
+    const document = await generateLabelDocxFromTemplate(template, hugeTitleInput, barcode);
+    const zip = await JSZip.loadAsync(document);
+    const xml = await zip.file("word/document.xml")?.async("text");
+    const productBox = namedAnchor(xml ?? "", "Text Box 2");
+
+    const expectedSize = pickTitleFontSize(hugeTitleInput.productName);
+    expect(expectedSize).toBeLessThan(36);
+    expect(productBox).toContain(`<w:sz w:val="${expectedSize}"/>`);
+    expect(productBox).toContain(`<w:szCs w:val="${expectedSize}"/>`);
+  });
+
+  it("shrinks oversized ingredient declarations progressively", async () => {
+    const barcode = await generateGs1BarcodePng(buildGs1Payload(input));
+    const template = await readFile(path.join(process.cwd(), "sample", "Lava Cake Label 6''x4''.docx"));
+    const hugeIngredientsInput = {
+      ...input,
+      ingredients: `Eggs, sugar, wheat flour, margarine, water, monoglycerides, potassium sorbate, citric acid, natural flavor, vitamin A palmitate, vitamin D3, dark chocolate, cocoa butter, unsweetened chocolate, soy lecithin, natural vanilla extract, stabilizer, ${"x".repeat(300)}`,
+    };
+    const document = await generateLabelDocxFromTemplate(template, hugeIngredientsInput, barcode);
+    const zip = await JSZip.loadAsync(document);
+    const xml = await zip.file("word/document.xml")?.async("text");
+    const ingredientsBox = namedAnchor(xml ?? "", "Text Box 5");
+
+    const expectedSize = pickIngredientFontSize(hugeIngredientsInput.ingredients);
+    expect(expectedSize).toBeLessThan(18);
+    expect(ingredientsBox).toContain(`<w:sz w:val="${expectedSize}"/>`);
+    expect(ingredientsBox).toContain('<wp:extent cx="3211195" cy="1508760"/>');
   });
 });
 

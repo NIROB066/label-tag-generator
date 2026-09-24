@@ -1,18 +1,13 @@
 import { readFile } from "node:fs/promises";
-import path from "node:path";
 import JSZip from "jszip";
+import { LABEL_TEMPLATE, labelTemplatePath } from "@/domain/label-template";
 
 export const runtime = "nodejs";
 
 export async function GET() {
-  const templatePath = path.join(
-    process.cwd(),
-    "sample",
-    "Lava Cake Label 6''x4''.docx",
-  );
-  const template = await readFile(templatePath);
+  const template = await readFile(labelTemplatePath());
   const zip = await JSZip.loadAsync(template, { checkCRC32: true });
-  const logo = zip.file("word/media/image1.jpeg");
+  const logo = zip.file(LABEL_TEMPLATE.logoMediaPath);
 
   if (!logo) {
     return new Response("Template logo not found.", { status: 404 });

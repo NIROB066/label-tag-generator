@@ -112,6 +112,19 @@ export function buildGs1Payload(input: {
   };
 }
 
+/**
+ * Converts any scanner/artwork GS1 representation into the plain barcode
+ * number digits: strips parentheses, whitespace, GS1 group separators, and
+ * the `]C1` GS1-128 symbology identifier some scanners emit.
+ *
+ * e.g. "(01)10627146285749(15)250923(10)72722" -> "0110627146285749152509231072722"
+ */
+export function toBarcodeNumber(text: string): string {
+  return text
+    .replaceAll("]C1", "")
+    .replace(/[()\s\u001d]/g, "");
+}
+
 export function parseGs1Payload(encoded: string): Gs1ParseResult {
   if (encoded.includes("(") || encoded.includes(")")) {
     throw new LabelValidationError(

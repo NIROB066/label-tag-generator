@@ -4,6 +4,7 @@ import {
   isValidGtin,
   normalizeGtinTo14,
   parseGs1Payload,
+  toBarcodeNumber,
 } from "@/domain/gs1";
 import { LabelValidationError } from "@/domain/label-schema";
 
@@ -55,6 +56,32 @@ describe("GS1 payloads", () => {
   it("rejects encoded parentheses", () => {
     expect(() => parseGs1Payload(payloadWithParentheses())).toThrow(
       "must not contain parentheses",
+    );
+  });
+});
+
+describe("toBarcodeNumber", () => {
+  it("strips parentheses from the human-readable form", () => {
+    expect(toBarcodeNumber("(01)10627146285749(15)250923(10)72722")).toBe(
+      "0110627146285749152509231072722",
+    );
+  });
+
+  it("strips the GS1-128 symbology identifier some scanners emit", () => {
+    expect(toBarcodeNumber("]C10110627146285749152509231072722")).toBe(
+      "0110627146285749152509231072722",
+    );
+  });
+
+  it("strips whitespace and group separators", () => {
+    expect(toBarcodeNumber(" 0110627146285749 15 250923\u001d10 72722 ")).toBe(
+      "0110627146285749152509231072722",
+    );
+  });
+
+  it("leaves an already-plain barcode number untouched", () => {
+    expect(toBarcodeNumber("0110627146285749152509231072722")).toBe(
+      "0110627146285749152509231072722",
     );
   });
 });

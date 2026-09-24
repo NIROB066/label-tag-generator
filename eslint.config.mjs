@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Agent Manager worktree checkouts are separate sessions, not this tree.
+    ".kilo/**",
   ]),
 ]);
 
