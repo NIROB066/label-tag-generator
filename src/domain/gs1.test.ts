@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   buildGs1Payload,
+  gtinCheckDigit,
   isValidGtin,
   normalizeGtinTo14,
   parseGs1Payload,
+  suggestGtinCorrection,
   toBarcodeNumber,
 } from "@/domain/gs1";
 import { LabelValidationError } from "@/domain/label-schema";
@@ -25,6 +27,41 @@ describe("GTIN validation", () => {
     expect(() => normalizeGtinTo14("(01)10627146285749")).toThrow(
       LabelValidationError,
     );
+  });
+});
+
+describe("gtinCheckDigit", () => {
+  it("computes the check digit for a GTIN-14 base", () => {
+    expect(gtinCheckDigit("1062714628574")).toBe("9");
+  });
+
+  it("computes the check digit for a GTIN-12 base", () => {
+    expect(gtinCheckDigit("03600029145")).toBe("2");
+  });
+
+  it("computes the check digit for a GTIN-13 base", () => {
+    expect(gtinCheckDigit("590123412345")).toBe("7");
+  });
+
+  it("returns null for invalid bases", () => {
+    expect(gtinCheckDigit("12345")).toBeNull();
+    expect(gtinCheckDigit("1234567a")).toBeNull();
+    expect(gtinCheckDigit("")).toBeNull();
+  });
+});
+
+describe("suggestGtinCorrection", () => {
+  it("suggests the corrected GTIN for a wrong check digit", () => {
+    expect(suggestGtinCorrection("10627146285748")).toBe("10627146285749");
+  });
+
+  it("returns null when the GTIN is already correct", () => {
+    expect(suggestGtinCorrection("10627146285749")).toBeNull();
+  });
+
+  it("returns null for wrong-length or non-digit input", () => {
+    expect(suggestGtinCorrection("1234")).toBeNull();
+    expect(suggestGtinCorrection("1062714628574abc9")).toBeNull();
   });
 });
 

@@ -16,8 +16,8 @@ describe("estimateWrappedLines", () => {
     expect(estimateWrappedLines("   ", 42, TITLE_BOX_WIDTH_PT)).toBe(0);
   });
 
-  it("fits a short product name on one line at the template size", () => {
-    expect(estimateWrappedLines("Lava Cake 3 Inch", 42, TITLE_BOX_WIDTH_PT)).toBe(1);
+  it("wraps the template title across two lines at the template size", () => {
+    expect(estimateWrappedLines("Lava Cake 3 Inch", 42, TITLE_BOX_WIDTH_PT)).toBe(2);
   });
 
   it("wraps a long product name across multiple lines at the template size", () => {
@@ -27,7 +27,7 @@ describe("estimateWrappedLines", () => {
         42,
         TITLE_BOX_WIDTH_PT,
       ),
-    ).toBe(3);
+    ).toBe(5);
   });
 
   it("counts a word longer than the line as multiple lines", () => {
@@ -41,15 +41,22 @@ describe("pickTitleFontSize", () => {
   });
 
   it("shrinks a two-word-boundary name only as much as needed", () => {
-    // At 36 half-points (18pt) this name fits exactly two lines.
-    expect(pickTitleFontSize("Chocolate Raspberry Cheesecake Dessert Cups")).toBe(36);
+    // The 1.6" usable title box cannot hold this 43-char name on two lines
+    // above the 10pt readability floor.
+    expect(pickTitleFontSize("Chocolate Raspberry Cheesecake Dessert Cups")).toBe(20);
+  });
+
+  it("shrinks a long real-world name to two lines instead of overflowing", () => {
+    const size = pickTitleFontSize("IRHU moni chocolate khabe chowar sathe");
+    expect(size).toBe(22);
+    expect(estimateWrappedLines("IRHU moni chocolate khabe chowar sathe", size, TITLE_BOX_WIDTH_PT)).toBeLessThanOrEqual(2);
   });
 
   it("shrinks further for very long names but never below the floor", () => {
     const size = pickTitleFontSize(
       "Chocolate Raspberry Cheesecake Dessert Cups with Whipped Cream Topping",
     );
-    expect(size).toBe(22);
+    expect(size).toBe(20);
     expect(size).toBeGreaterThanOrEqual(TITLE_FONT_MIN_HALF_POINTS);
   });
 

@@ -30,7 +30,12 @@ These observations must be verified with automated fixtures before implementatio
 - Barcode PNG and exact sample-template 6x4 DOCX generation: implemented and package-tested. The writer preserves the sample package and replaces only scoped text and barcode media.
 - Barcode decode and batch scan API: implemented. Inspection treats the written barcode number as the truth and fully compares the scanned artwork — GTIN, best-before `(15)`, lot `(10)`, and the complete paren-stripped barcode number — with missing components reported as errors carrying stable codes (`BARCODE_VALUE_MISMATCH`, `BEST_BEFORE_MISMATCH`, `LOT_MISMATCH`, `BARCODE_NOT_FOUND`, `BARCODE_UNREADABLE`).
 - Template placeholders centralized in `src/domain/label-template.ts` (text-box names, media paths, EMU geometry) and auto-fit typography in `src/domain/label-typography.ts` (two-line title shrinking, progressive ingredient shrinking), both unit-tested.
-- Repair: single and batch repair regenerate the full label from the template using the scanned expected values (including ingredients and storage instruction), and correction UI is hidden for verified labels.
+- Repair: single and batch repair patch the uploaded DOCX in place (barcode replaced at its detected size/position, LOT/BEST BEFORE text corrected when wrong) instead of regenerating from the template, and correction UI is hidden for verified labels.
+- Batch UX: ZIP archives of labels are extracted in the browser; "Fix and Download ALL" repairs mismatched labels (`[FIXED]` name prefix) and passes correct ones through into a single `Labels.zip` download with a per-file progress bar (client-side orchestration over the single-repair API; the batch-repair route was removed). An "all files are CORRECT, still want to download?" action returns originals.
+- Home screen with two large Create / Check choices, donut chart of batch health, Previous/Next + swipe label paging, and Clear all.
+- PWA: manifest + icons + minimal service worker + Install button (iOS Add to Home Screen guidance).
+- Mobile: independent bottom navigation, stacked fields, swipe navigation between labels.
+- Business user guide at `/guide` with annotated diagrams and print-to-PDF support.
 
 ## 3. Recommended architecture
 

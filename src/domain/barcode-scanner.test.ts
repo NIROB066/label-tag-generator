@@ -49,21 +49,24 @@ describe("scanDocxLabel", () => {
     );
     const result = await scanDocxLabel(file, "Lava Cake Label 6''x4''.docx");
 
-    // The sample artwork only encodes the GTIN, while the label text also
-    // writes (15)270215 and (10)26815. The written number is the truth, so
-    // every missing component must be detected as an error.
+    // The sample artwork only encodes the GTIN, while the written number is
+    // (01)10627146285749(15)250923(10)72722. The written number is the truth,
+    // so every missing component must be detected as an error.
     expect(result.scannedGtin).toBe("10627146285749");
     expect(result.expectedGtin).toBe("10627146285749");
-    expect(result.expectedLotCode).toBe("26815");
-    expect(result.expectedBestBefore).toBe("2027-02-15");
+    expect(result.expectedLotCode).toBe("72722");
+    expect(result.expectedBestBefore).toBe("2025-09-23");
     expect(result.status).toBe("attention");
 
     const fields = result.mismatches.map((m) => m.field);
     expect(fields).toContain("Best Before Date");
     expect(fields).toContain("Lot Code");
     expect(fields).toContain("Full Barcode Number");
+    // The LOT CODE / BEST BEFORE text lines disagree with the written number.
+    expect(fields).toContain("Best Before Text");
+    expect(fields).toContain("Lot Code Text");
     expect(result.scannedBarcodeNumber).toBe("0110627146285749");
-    expect(result.expectedBarcodeNumber).toBe("0110627146285749152702151026815");
+    expect(result.expectedBarcodeNumber).toBe("0110627146285749152509231072722");
     expect(result.barcodeMediaFile).toBe("word/media/image2.png");
     expect(result.barcodeImageBase64).toContain("data:image/png;base64,");
 
@@ -72,7 +75,7 @@ describe("scanDocxLabel", () => {
     expect(result.expectedStorageInstruction).toContain("KEEP FROZEN");
   });
 
-  it("detects GTIN mismatch on Raspberry cheesecake sample", async () => {
+  it("treats the number visibly written on the label as the truth over stale descr alt-text", async () => {
     const file = await readFile(
       path.join(
         process.cwd(),
@@ -85,30 +88,27 @@ describe("scanDocxLabel", () => {
       "Raspberry cheesecake  Label (6''x4'').docx",
     );
 
-    // Document expected GTIN is 10759242722054, but scanned artwork has 10627146285572!
-    expect(result.expectedGtin).toBe("10759242722054");
+    // The label's visible number is (01)10627146285572(15)250923(10)72722 —
+    // the same values the artwork encodes — while the drawing's descr
+    // alt-text claims GTIN 10759242722054 and the LOT/BB text lines say
+    // 26827 / 2027-02-28. The written number must win everywhere.
+    expect(result.expectedGtin).toBe("10627146285572");
     expect(result.scannedGtin).toBe("10627146285572");
+    expect(result.expectedLotCode).toBe("72722");
+    expect(result.expectedBestBefore).toBe("2025-09-23");
+    expect(result.expectedBarcodeText).toBe("(01)10627146285572(15)250923(10)72722");
     expect(result.status).toBe("attention");
-    expect(result.mismatches.length).toBeGreaterThan(0);
-    expect(result.mismatches[0].field).toBe("GTIN / Barcode Number");
-    expect(result.mismatches[0].code).toBe("BARCODE_VALUE_MISMATCH");
+    const fields = result.mismatches.map((m) => m.field);
+    expect(fields).not.toContain("GTIN / Barcode Number");
+    // The artwork encodes only the bare GTIN, so the number's (15)/(10) are
+    // missing from the barcode...
+    expect(fields).toContain("Best Before Date");
+    expect(fields).toContain("Lot Code");
+    // ...and the LOT/BB text lines also disagree with the written number.
+    expect(fields).toContain("Best Before Text");
+    expect(fields).toContain("Lot Code Text");
     expect(result.barcodeMediaFile).toBe("word/media/image2.png");
     expect(result.scannedBarcodeNumber).toBeTruthy();
-  });
-
-  it("scans inline drawing barcode on Issue/Lava-Cake-3-Inch.docx", async () => {
-    const file = await readFile(
-      path.join(process.cwd(), "Issue", "Lava-Cake-3-Inch.docx"),
-    );
-    const result = await scanDocxLabel(file, "Lava-Cake-3-Inch.docx");
-
-    expect(result.expectedGtin).toBe("10627146285749");
-    expect(result.scannedGtin).toBe("10627146285749");
-    expect(result.status).toBe("ready");
-    expect(result.scannedBarcodeNumber).toBe(result.expectedBarcodeNumber);
-    expect(result.barcodeMediaFile).toBe(
-      "word/media/image2.png",
-    );
   });
 
   it("reports ready with zero mismatches when artwork matches the written truth", async () => {

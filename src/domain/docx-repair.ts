@@ -1,22 +1,30 @@
 import JSZip from "jszip";
+import { toBarcodeNumber } from "@/domain/gs1";
 import { scanDocxLabel } from "@/domain/barcode-scanner";
 
 export type RepairOptions = {
   barcodeMediaFile?: string;
   newBarcodePng: Buffer;
+  /**
+   * Optional explicit barcode size in EMU. When omitted (the default repair
+   * path), the barcode keeps the exact size and position detected in the
+   * uploaded document, so nothing else on the label can shift.
+   */
   widthEmu?: number;
   heightEmu?: number;
   authoritativeBarcodeText?: string;
+  /** Authoritative lot code; LOT CODE text is patched in place only when it differs. */
+  lotCode?: string;
+  /** Authoritative best-before (YYYY-MM-DD); BEST BEFORE text is patched only when it differs. */
+  bestBefore?: string;
 };
 
-// Default high-clarity dimensions matching 3.4" x 0.70" (4.85:1 aspect ratio)
-const DEFAULT_BARCODE_WIDTH_EMU = 3108960;
-const DEFAULT_BARCODE_HEIGHT_EMU = 640080;
-const SAFE_TEXT_BOX_OFFSET_EMU = 912114;
-
 /**
- * Universally repairs a DOCX label by replacing its barcode media, aligning
- * geometry to prevent overlap, and updating human-readable text non-destructively.
+ * Surgically repairs a DOCX label in place: swaps the barcode artwork, syncs
+ * the human-readable barcode number, and corrects LOT CODE / BEST BEFORE text
+ * when they disagree with the authoritative values. Title, ingredients,
+ * fonts, geometry, and every other element of the uploaded document are left
+ * untouched.
  */
 export async function repairDocxBarcode(
   docxBytes: Uint8Array | Buffer,
@@ -32,6 +40,7 @@ export async function repairDocxBarcode(
 
   // If barcodeMediaFile is not provided, scan to detect it
   let targetMediaPath = options.barcodeMediaFile;
+  let barcodeRelId: string | null = null;
   if (!targetMediaPath) {
     const scan = await scanDocxLabel(docxBytes);
     if (!scan.barcodeMediaFile) {
@@ -43,15 +52,16 @@ export async function repairDocxBarcode(
   // 1. Replace the barcode media image in the ZIP
   zip.file(targetMediaPath, options.newBarcodePng);
 
-  // 2. Remove any accidental stray characters/paragraphs (e.g. stray "v" typed before barcode)
+  // 2. Blank stray single-character paragraphs (e.g. a "v" typed before the
+  //    barcode) without deleting them: paragraph-relative anchors below keep
+  //    their baseline, so the barcode stays under the ingredients box.
   documentXml = documentXml.replace(
-    /<w:p[^>]*>\s*<w:r[^>]*>\s*<w:t>[vV]<\/w:t>\s*<\/w:r>\s*<\/w:p>/g,
-    "",
+    /(<w:p[^>]*>\s*<w:r[^>]*>\s*<w:t>)[vV](<\/w:t>\s*<\/w:r>\s*<\/w:p>)/g,
+    "$1$2",
   );
 
   // 3. Read relationships to find which Relationship ID embeds targetMediaPath
   const relsEntry = zip.file("word/_rels/document.xml.rels");
-  let barcodeRelId: string | null = null;
   if (relsEntry) {
     const relsXml = await relsEntry.async("text");
     const relRegex = /<Relationship[^>]+Id="([^"]+)"[^>]+Target="([^"]+)"/g;
@@ -67,84 +77,42 @@ export async function repairDocxBarcode(
     }
   }
 
-  // 4. Update barcode drawing geometry & measure vertical boundary
-  const targetW = options.widthEmu ?? DEFAULT_BARCODE_WIDTH_EMU;
-  const targetH = options.heightEmu ?? DEFAULT_BARCODE_HEIGHT_EMU;
-  let barcodeBottomEmu: number | null = null;
+  // 4. Optional explicit resize. Without width/height the detected geometry
+  //    (size AND position) is preserved exactly, including the VML fallback.
+  if (barcodeRelId && options.widthEmu && options.heightEmu) {
+    const { widthEmu, heightEmu } = options;
 
-  if (barcodeRelId) {
     const blipRegex = new RegExp(
       `(<(?:wp:inline|wp:anchor)[\\s\\S]*?r:embed="${barcodeRelId}"[\\s\\S]*?<\\/(?:wp:inline|wp:anchor)>)`,
       "g",
     );
+    documentXml = documentXml.replace(blipRegex, (drawingBlock) =>
+      drawingBlock
+        .replace(/<wp:extent\s+cx="\d+"\s+cy="\d+"\/>/g, `<wp:extent cx="${widthEmu}" cy="${heightEmu}"/>`)
+        .replace(/<a:ext\s+cx="\d+"\s+cy="\d+"\/>/g, `<a:ext cx="${widthEmu}" cy="${heightEmu}"/>`),
+    );
 
-    documentXml = documentXml.replace(blipRegex, (drawingBlock) => {
-      let updated = drawingBlock;
-
-      // Extract existing Y offset if it is an anchor
-      const posMatch = drawingBlock.match(
-        /<wp:positionV[^>]*>\s*<wp:posOffset>(-?\d+)<\/wp:posOffset>/,
-      );
-      if (posMatch) {
-        const top = Number(posMatch[1]);
-        barcodeBottomEmu = top + targetH;
-      }
-
-      updated = updated.replace(
-        /<wp:extent\s+cx="\d+"\s+cy="\d+"\/>/g,
-        `<wp:extent cx="${targetW}" cy="${targetH}"/>`,
-      );
-      updated = updated.replace(
-        /<a:ext\s+cx="\d+"\s+cy="\d+"\/>/g,
-        `<a:ext cx="${targetW}" cy="${targetH}"/>`,
-      );
-
-      return updated;
-    });
+    // Mirror the size into the VML fallback shape so old Word versions agree.
+    const widthPt = (widthEmu / 12700).toFixed(2);
+    const heightPt = (heightEmu / 12700).toFixed(2);
+    const vmlBlockRegex = new RegExp(
+      `<v:shape[^>]*>(?:(?!<\\/v:shape>)[\\s\\S])*?<v:imagedata[^>]+r:id="${barcodeRelId}"[\\s\\S]*?<\\/v:shape>`,
+      "g",
+    );
+    documentXml = documentXml.replace(vmlBlockRegex, (shapeBlock) =>
+      shapeBlock
+        .replace(/(style="[^"]*width:)[\d.]+pt/, `$1${widthPt}pt`)
+        .replace(/(style="[^"]*height:)[\d.]+pt/, `$1${heightPt}pt`),
+    );
   }
 
-  // 5. Eliminate overlap: ensure Text Box 7 or GS1 text box is placed below the barcode
-  if (barcodeBottomEmu !== null) {
-    const minSafeOffset = Math.max(barcodeBottomEmu + 25000, SAFE_TEXT_BOX_OFFSET_EMU);
-
-    // Update Text Box 7 anchor posOffset if present
-    const tbIdx = documentXml.indexOf("Text Box 7");
-    if (tbIdx >= 0) {
-      const aStart = documentXml.lastIndexOf("<wp:anchor", tbIdx);
-      const aEnd = documentXml.indexOf("</wp:anchor>", tbIdx);
-      if (aStart >= 0 && aEnd >= 0) {
-        const block = documentXml.slice(aStart, aEnd + "</wp:anchor>".length);
-        const currentPosMatch = block.match(
-          /<wp:positionV[^>]*>\s*<wp:posOffset>(-?\d+)<\/wp:posOffset>/,
-        );
-        if (currentPosMatch && Number(currentPosMatch[1]) < minSafeOffset) {
-          const updatedBlock = block.replace(
-            /(<wp:positionV[^>]*>\s*<wp:posOffset>)-?\d+(<\/wp:posOffset>)/,
-            `$1${minSafeOffset}$2`,
-          );
-          documentXml =
-            documentXml.slice(0, aStart) +
-            updatedBlock +
-            documentXml.slice(aEnd + "</wp:anchor>".length);
-        }
-      }
-
-      // Also adjust fallback VML shape margin-top if present
-      documentXml = documentXml.replace(
-        /(<v:shape[^>]+id="Text Box 7"[^>]+style="[^"]*margin-top:)[^;]+(;)/,
-        `$168pt$2`,
-      );
-    }
-  }
-
-  // 6. Update the human-readable text underneath the barcode
+  // 5. Sync the human-readable barcode number under the artwork
   if (options.authoritativeBarcodeText) {
     const escaped = escapeXml(options.authoritativeBarcodeText);
-    // Replace (01)... in <w:t>
-    documentXml = documentXml.replace(
-      /(<w:t(?: [^>]*)?>)\s*\(01\)\d{14}[^<]*(<\/w:t>)/g,
-      `$1${escaped}$2`,
-    );
+    // Rewrite the (01)... number in <w:t> even when Word split it across
+    // several runs (editing in Word fragments the run), consuming leftover
+    // fragments so no extra digits survive next to the new number.
+    documentXml = replaceHumanReadableBarcodeNumber(documentXml, options.authoritativeBarcodeText);
     // Also update descr="(01)..." if present
     documentXml = documentXml.replace(
       /descr="\(01\)\d{14}[^"]*"/g,
@@ -155,6 +123,15 @@ export async function repairDocxBarcode(
       /alt="\(01\)\d{14}[^"]*"/g,
       `alt="${escaped}"`,
     );
+  }
+
+  // 6. Correct wrong LOT CODE / BEST BEFORE text in place, preserving formatting
+  if (options.lotCode !== undefined) {
+    documentXml = patchLabeledValue(documentXml, /\bLOT\s*CODE\b/i, /^[A-Za-z0-9]*/, options.lotCode);
+  }
+  if (options.bestBefore !== undefined) {
+    const date = options.bestBefore.replaceAll("-", "/");
+    documentXml = patchLabeledValue(documentXml, /\bBEST\s*BEFORE\b/i, /^[0-9/\-]+/, date);
   }
 
   // 7. Remove any document protection or read-only settings
@@ -180,6 +157,202 @@ export async function repairDocxBarcode(
     compression: "DEFLATE",
     compressionOptions: { level: 6 },
     platform: "UNIX",
+  });
+}
+
+/** Matches innermost paragraphs only (text-box paragraphs nest inside body paragraphs). */
+const INNERMOST_PARAGRAPH = /<w:p(?: [^>]*)?>(?:(?!<w:p[ >])[\s\S])*?<\/w:p>/g;
+const TEXT_TAG_GLOBAL = /<w:t(?: [^>]*)?>([\s\S]*?)<\/w:t>/g;
+
+/**
+ * Rewrites the value that follows a text label such as "LOT CODE:" or
+ * "BEST BEFORE:" inside every matching paragraph, no matter how Word split
+ * the value across runs. When the existing value already equals the new one
+ * the paragraph is left byte-for-byte untouched.
+ */
+function patchLabeledValue(
+  documentXml: string,
+  labelRegex: RegExp,
+  valueRegex: RegExp,
+  newValue: string,
+): string {
+  return documentXml.replace(INNERMOST_PARAGRAPH, (paragraph) => {
+    const tags: Array<{ start: number; end: number; value: string; charStart: number }> = [];
+    TEXT_TAG_GLOBAL.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    let charOffset = 0;
+    while ((match = TEXT_TAG_GLOBAL.exec(paragraph)) !== null) {
+      tags.push({
+        start: match.index,
+        end: match.index + match[0].length,
+        value: match[1],
+        charStart: charOffset,
+      });
+      charOffset += match[1].length;
+    }
+    if (tags.length === 0) {
+      return paragraph;
+    }
+
+    const joined = tags.map((tag) => tag.value).join("");
+    TEXT_TAG_GLOBAL.lastIndex = 0;
+    const labelMatch = labelRegex.exec(joined);
+    if (!labelMatch) {
+      return paragraph;
+    }
+
+    const afterLabel = joined.slice(labelMatch.index + labelMatch[0].length);
+    const separator = afterLabel.match(/^\s*:?\s*/);
+    const separatorStr = separator ? separator[0] : "";
+    const separatorLength = separatorStr.length;
+    const valueStart = labelMatch.index + labelMatch[0].length + separatorLength;
+    const valueMatch = valueRegex.exec(afterLabel.slice(separatorLength));
+    const currentValue = valueMatch ? valueMatch[0] : "";
+
+    // Exactly one space goes between the label's colon and the value. When
+    // the separator already provided one in an untouched run, the value is
+    // written plain; otherwise the space is written with the value.
+    const separatorAfterColon = separatorStr.includes(":")
+      ? separatorStr.slice(separatorStr.indexOf(":") + 1)
+      : separatorStr;
+    const spaceRemainsBeforeValue = /\s/.test(separatorAfterColon);
+
+    if (
+      normalizeValue(currentValue) === normalizeValue(newValue) &&
+      (spaceRemainsBeforeValue || currentValue === "")
+    ) {
+      return paragraph; // already correct with proper spacing — leave untouched
+    }
+
+    const valueEnd = valueStart + currentValue.length;
+    const replacements: Array<{ start: number; end: number; text: string }> = [];
+    let written = false;
+
+    for (const tag of tags) {
+      const charStart = tag.charStart;
+      const charEnd = charStart + tag.value.length;
+      const overlapsValue = charStart < valueEnd && charEnd > valueStart;
+
+      if (overlapsValue) {
+        const prefix = tag.value.slice(0, Math.max(0, valueStart - charStart)).replace(/\s+$/, "");
+        const suffix = charEnd > valueEnd ? tag.value.slice(valueEnd - charStart) : "";
+        const glue = prefix.length > 0 || !spaceRemainsBeforeValue ? " " : "";
+        replacements.push({
+          start: tag.start,
+          end: tag.end,
+          text: `${escapeXml(prefix)}${written ? "" : `${glue}${escapeXml(newValue)}`}${escapeXml(suffix)}`,
+        });
+        written = true;
+      } else if (!written && charEnd <= valueStart && currentValue === "") {
+        replacements.push({
+          start: tag.start,
+          end: tag.end,
+          text: `${escapeXml(tag.value.replace(/\s+$/, ""))} ${escapeXml(newValue)}`,
+        });
+        written = true;
+      }
+    }
+
+    if (!written) {
+      return paragraph;
+    }
+
+    let patched = paragraph;
+    for (let index = replacements.length - 1; index >= 0; index -= 1) {
+      const replacement = replacements[index];
+      const wholeTag = patched.slice(replacement.start, replacement.end);
+      const openingEnd = wholeTag.indexOf(">");
+      let opening = wholeTag.slice(0, openingEnd + 1);
+      if (/^\s|\s$/.test(replacement.text) && !opening.includes("xml:space")) {
+        opening = opening.replace("<w:t", '<w:t xml:space="preserve"');
+      }
+      const newTag = `${opening}${replacement.text}</w:t>`;
+      patched = patched.slice(0, replacement.start) + newTag + patched.slice(replacement.end);
+    }
+    return patched;
+  });
+}
+
+function normalizeValue(value: string): string {
+  return value.replace(/[\s\-]/g, "").toUpperCase();
+}
+
+/**
+ * Rewrites the human-readable "(01)...(15)...(10)..." number inside every
+ * paragraph that contains it, no matter how Word split it across runs: the
+ * first covering run receives the full new number and the remaining
+ * fragments are cleared, so no leftover digits survive an edit.
+ */
+function replaceHumanReadableBarcodeNumber(
+  documentXml: string,
+  authoritativeText: string,
+): string {
+  return documentXml.replace(INNERMOST_PARAGRAPH, (paragraph) => {
+    const tags: Array<{ start: number; end: number; value: string; charStart: number }> = [];
+    TEXT_TAG_GLOBAL.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    let charOffset = 0;
+    while ((match = TEXT_TAG_GLOBAL.exec(paragraph)) !== null) {
+      tags.push({
+        start: match.index,
+        end: match.index + match[0].length,
+        value: match[1],
+        charStart: charOffset,
+      });
+      charOffset += match[1].length;
+    }
+    if (tags.length === 0) {
+      return paragraph;
+    }
+
+    const joined = tags.map((tag) => tag.value).join("");
+    TEXT_TAG_GLOBAL.lastIndex = 0;
+    const numberMatch = joined.match(/\(01\)\d{14}[^\s]*/);
+    if (!numberMatch) {
+      return paragraph;
+    }
+    if (toBarcodeNumber(numberMatch[0]) === toBarcodeNumber(authoritativeText)) {
+      return paragraph; // already correct — leave the runs untouched
+    }
+
+    const valueStart = numberMatch.index ?? 0;
+    const valueEnd = valueStart + numberMatch[0].length;
+    const replacements: Array<{ start: number; end: number; text: string }> = [];
+    let written = false;
+
+    for (const tag of tags) {
+      const charStart = tag.charStart;
+      const charEnd = charStart + tag.value.length;
+      if (charStart >= valueEnd || charEnd <= valueStart) {
+        continue;
+      }
+      const prefix = tag.value.slice(0, Math.max(0, valueStart - charStart));
+      const suffix = charEnd > valueEnd ? tag.value.slice(valueEnd - charStart) : "";
+      replacements.push({
+        start: tag.start,
+        end: tag.end,
+        text: `${escapeXml(prefix)}${written ? "" : escapeXml(authoritativeText)}${escapeXml(suffix)}`,
+      });
+      written = true;
+    }
+
+    if (!written) {
+      return paragraph;
+    }
+
+    let patched = paragraph;
+    for (let index = replacements.length - 1; index >= 0; index -= 1) {
+      const replacement = replacements[index];
+      const wholeTag = patched.slice(replacement.start, replacement.end);
+      const openingEnd = wholeTag.indexOf(">");
+      let opening = wholeTag.slice(0, openingEnd + 1);
+      if (/^\s|\s$/.test(replacement.text) && !opening.includes("xml:space")) {
+        opening = opening.replace("<w:t", '<w:t xml:space="preserve"');
+      }
+      const newTag = `${opening}${replacement.text}</w:t>`;
+      patched = patched.slice(0, replacement.start) + newTag + patched.slice(replacement.end);
+    }
+    return patched;
   });
 }
 

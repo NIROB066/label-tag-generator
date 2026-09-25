@@ -27,17 +27,20 @@ Run `npm test`, `npm run lint`, and `npx tsc --noEmit` before finishing any chan
 
 - `src/domain/` — framework-free, unit-tested core:
   - `label-schema.ts`: shared types (`LabelInput`, `LabelScanResult`, `ValidationErrorCode`).
-  - `gs1.ts`: GTIN check-digit validation, GS1 payload build/parse, `toBarcodeNumber` (strips `()`/`]C1`/separators).
+  - `gs1.ts`: GTIN check-digit validation (`gtinCheckDigit`, `suggestGtinCorrection`), GS1 payload build/parse, `toBarcodeNumber` (strips `()`/`]C1`/separators).
   - `label-template.ts`: single source of truth for template text-box names, media paths, and EMU geometry. Never hardcode `"Text Box N"` or EMU numbers elsewhere.
   - `label-typography.ts`: pure auto-fit rules — title shrinks to at most two wrapped lines; ingredients shrink progressively by length. Keep pure and tested.
   - `barcode.ts` (bwip-js PNG), `docx-writer.ts` (template mutation), `docx-reader.ts` (safe inspection), `barcode-scanner.ts` (decode + full compare), `docx-repair.ts` (surgical in-place patch path).
-- `src/app/page.tsx` — single client page, two modes (Create / Check & fix).
-- `src/app/api/labels/*` — Node-runtime route handlers (generate, scan, repair, batch-repair, barcode, logo).
+- `src/app/page.tsx` — single client page: home choice screen, Create mode, and Check & fix mode (ZIP upload extraction, Fix-and-Download-ALL orchestration with progress, donut chart, prev/next + swipe paging, mobile bottom nav).
+- `src/app/guide/` — print-to-PDF business user guide with annotated diagrams.
+- `src/app/api/labels/*` — Node-runtime route handlers (generate, scan, repair, barcode, logo). Batch repair runs client-side per file over the repair route.
+- `public/` — PWA manifest, service worker (`sw.js`), and generated icons.
 
 ## Invariants
 
-- The barcode number written on the document is the truth. Scans compare GTIN, best-before `(15)`, lot `(10)`, and the full paren-stripped number; a component written on the label but missing from the artwork is an error (`BEST_BEFORE_MISMATCH`, `LOT_MISMATCH`, `BARCODE_VALUE_MISMATCH`).
-- Repair always regenerates the full label from the template (same pipeline as Create) using scanned expected values, including ingredients and storage instruction. Correction UI stays hidden for verified labels.
+- The barcode number written on the document is the truth — the full `(01)…(15)…(10)…` number visibly printed on the label supplies the expected GTIN, best-before, and lot; LOT CODE / BEST BEFORE text lines and a drawing's `descr` alt-text are fallbacks only, and text lines that disagree with the written number are flagged (`BEST_BEFORE_MISMATCH`, `LOT_MISMATCH`, `BARCODE_VALUE_MISMATCH`) and corrected by repair.
+- Repair is surgical: it replaces only the barcode image inside the uploaded DOCX at its detected size and position, syncs the human-readable barcode number, and corrects LOT CODE / BEST BEFORE text when wrong. Title, ingredients, fonts, and every other element of the uploaded document stay untouched. Correction UI stays hidden for verified labels.
+- Fix-and-Download-ALL bundles correct originals unchanged and repaired labels as `[FIXED] <name>` into `Labels.zip`.
 - Encoded barcode data never contains parentheses; rendered barcodes have no human-readable digits beneath them.
-- `sample/` and `Issue/` DOCX files are read-only fixtures relied on by tests.
+- `sample/` DOCX files are read-only fixtures relied on by tests.
 - Tests must stay green: worktree checkouts under `.kilo/` are excluded from vitest and eslint.

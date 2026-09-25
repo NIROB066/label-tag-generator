@@ -1,10 +1,13 @@
 "use client";
 
 import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
-import { buildGs1Payload, toBarcodeNumber } from "@/domain/gs1";
+import Link from "next/link";
+import JSZip from "jszip";
+import { buildGs1Payload, suggestGtinCorrection, toBarcodeNumber } from "@/domain/gs1";
+import { pickTitleFontSize } from "@/domain/label-typography";
 import { LabelScanResult } from "@/domain/label-schema";
 
-type Mode = "create" | "inspect";
+type Mode = "home" | "create" | "inspect";
 
 type InspectionRow = {
   id: string;
@@ -13,6 +16,11 @@ type InspectionRow = {
   scanResult: LabelScanResult;
   isRepaired?: boolean;
 };
+
+type BeforeInstallPromptEvent = Event & { prompt: () => Promise<void> };
+
+const DOCX_MIME =
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 
 // The Create form starts empty; every field shows an example placeholder
 // instead of pre-filled hardcoded sample data.
@@ -36,14 +44,17 @@ const formPlaceholders = {
 };
 
 export default function Home() {
-  const [mode, setMode] = useState<Mode>("inspect");
+  const [mode, setMode] = useState<Mode>("home");
   const [rows, setRows] = useState<InspectionRow[]>([]);
   const [selectedId, setSelectedId] = useState("");
-  const [selectedCheckedIds, setSelectedCheckedIds] = useState<Set<string>>(new Set());
   const [isScanning, setIsScanning] = useState(false);
   const [isRepairing, setIsRepairing] = useState(false);
-  const [isBatchRepairing, setIsBatchRepairing] = useState(false);
   const [repairMessage, setRepairMessage] = useState("");
+  const [toastMessage, setToastMessage] = useState("");
+
+  // Batch download-all state (progress bar)
+  const [isDownloadingAll, setIsDownloadingAll] = useState(false);
+  const [batchProgress, setBatchProgress] = useState({ done: 0, total: 0, current: "" });
 
   // Resizable Barcode Box state (in pixels; 96 DPI: 3.4" x 0.70" = 326px x 67px)
   const [boxWidth, setBoxWidth] = useState(326);
@@ -61,9 +72,17 @@ export default function Home() {
   const [formMessage, setFormMessage] = useState(
     "Enter the label data to validate a new barcode payload.",
   );
-  const [toastMessage, setToastMessage] = useState("");
+  const [formSuccess, setFormSuccess] = useState<string | null>(null);
+  const [gtinSuggestion, setGtinSuggestion] = useState<string | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [barcodePreviewUrl, setBarcodePreviewUrl] = useState<string | null>(null);
+
+  // Register the service worker so the app is installable as a PWA.
+  useEffect(() => {
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("/sw.js").catch(() => {});
+    }
+  }, []);
 
   // Load barcode preview for Create mode
   useEffect(() => {
@@ -133,7 +152,9 @@ export default function Home() {
     }
   }
 
-  // Handle Multi-file Upload and Real Scanning
+  const mismatchedRows = rows.filter((r) => r.scanResult.status !== "ready" && !r.isRepaired);
+
+  // Handle Multi-file Upload (DOCX files or ZIP archives of DOCX files)
   async function handleUpload(event: ChangeEvent<HTMLInputElement>) {
     const files = Array.from(event.target.files ?? []);
     if (!files.length) return;
@@ -142,8 +163,42 @@ export default function Home() {
     setRepairMessage("");
 
     try {
-      const formData = new FormData();
+      const docxFiles: File[] = [];
+
       for (const file of files) {
+        if (file.name.toLowerCase().endsWith(".zip")) {
+          try {
+            const zip = await JSZip.loadAsync(file);
+            const entries = Object.values(zip.files).filter(
+              (entry) =>
+                !entry.dir &&
+                !entry.name.startsWith("__MACOSX") &&
+                !(entry.name.split("/").pop() ?? "").startsWith("._") &&
+                entry.name.toLowerCase().endsWith(".docx"),
+            );
+            if (!entries.length) {
+              setToastMessage(`${file.name} contains no .docx labels.`);
+              continue;
+            }
+            for (const entry of entries) {
+              const bytes = await entry.async("arraybuffer");
+              const name = entry.name.split("/").pop() ?? entry.name;
+              docxFiles.push(new File([bytes], name, { type: DOCX_MIME }));
+            }
+          } catch {
+            setToastMessage(`${file.name} could not be read as a ZIP archive.`);
+          }
+        } else {
+          docxFiles.push(file);
+        }
+      }
+
+      if (!docxFiles.length) {
+        return;
+      }
+
+      const formData = new FormData();
+      for (const file of docxFiles) {
         formData.append("files", file);
       }
 
@@ -160,7 +215,7 @@ export default function Home() {
       const { results } = (await response.json()) as { results: LabelScanResult[] };
 
       const newRows: InspectionRow[] = results.map((res, index) => {
-        const matchingFile = files.find((f) => f.name === res.filename) ?? files[index];
+        const matchingFile = docxFiles.find((f) => f.name === res.filename) ?? docxFiles[index];
         return {
           id: `${res.filename}-${matchingFile.lastModified}-${Math.random().toString(36).slice(2, 7)}`,
           filename: res.filename,
@@ -183,27 +238,11 @@ export default function Home() {
     }
   }
 
-  // Toggle selection checkbox for a row
-  function toggleCheck(id: string) {
-    setSelectedCheckedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }
-
-  function toggleSelectAll() {
-    if (selectedCheckedIds.size === rows.length) {
-      setSelectedCheckedIds(new Set());
-    } else {
-      setSelectedCheckedIds(new Set(rows.map((r) => r.id)));
-    }
-  }
-
-  function selectAllMismatched() {
-    const mismatched = rows.filter((r) => r.scanResult.status !== "ready" && !r.isRepaired);
-    setSelectedCheckedIds(new Set(mismatched.map((r) => r.id)));
+  function handleClearAll() {
+    setRows([]);
+    setSelectedId("");
+    setRepairMessage("");
+    setToastMessage("");
   }
 
   // Repair a single label
@@ -212,41 +251,14 @@ export default function Home() {
     setRepairMessage("Generating replacement barcode and patching DOCX...");
 
     try {
-      const data = new FormData();
-      data.append("file", row.file);
-      data.append("productName", row.scanResult.productName);
-      data.append("itemNumber", row.scanResult.itemNumber);
-      data.append("gtin", row.scanResult.expectedGtin);
-      data.append("lotCode", row.scanResult.expectedLotCode);
-      data.append("bestBefore", row.scanResult.expectedBestBefore);
-      data.append("ingredients", row.scanResult.expectedIngredients);
-      data.append("storageInstruction", row.scanResult.expectedStorageInstruction);
-      if (row.scanResult.barcodeMediaFile) {
-        data.append("barcodeMediaFile", row.scanResult.barcodeMediaFile);
-      }
-      // Pass resizable box dimensions converted to EMUs (1px = 9525 EMUs)
-      data.append("widthEmu", String(Math.round(boxWidth * 9525)));
-      data.append("heightEmu", String(Math.round(boxHeight * 9525)));
-
-      const response = await fetch("/api/labels/repair", {
-        method: "POST",
-        body: data,
-      });
-
-      if (!response.ok) {
-        const err = (await response.json()) as { error?: string };
-        throw new Error(err.error ?? "Label repair failed.");
-      }
-
-      const blob = await response.blob();
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = `${row.filename.replace(/\.docx$/i, "")}-repaired.docx`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      setTimeout(() => URL.revokeObjectURL(url), 60000);
+      // Honor the resizable barcode box only when the original geometry was
+      // detected; the server keeps the detected size/position otherwise.
+      const dims =
+        selectedRow?.id === row.id && row.scanResult.widthEmu && row.scanResult.heightEmu
+          ? { widthEmu: Math.round(boxWidth * 9525), heightEmu: Math.round(boxHeight * 9525) }
+          : undefined;
+      const blob = await repairRow(row, dims);
+      downloadBlob(blob, `${row.filename.replace(/\.docx$/i, "")}-repaired.docx`);
 
       setRows((prev) =>
         prev.map((r) =>
@@ -258,9 +270,10 @@ export default function Home() {
                   ...r.scanResult,
                   status: "ready",
                   scannedGtin: r.scanResult.expectedGtin,
+                  scannedBarcodeNumber: r.scanResult.expectedBarcodeNumber,
                   scannedRaw: r.scanResult.expectedBarcodeText,
                   mismatches: [],
-                  detail: "Repaired: barcode replaced with authoritative GTIN.",
+                  detail: "Repaired: barcode replaced with the authoritative barcode number.",
                 },
               }
             : r,
@@ -275,60 +288,105 @@ export default function Home() {
     }
   }
 
-  // Batch repair all selected or all mismatched labels
-  async function handleBatchRepair(targetRows: InspectionRow[]) {
-    if (!targetRows.length) return;
-    setIsBatchRepairing(true);
+  async function repairRow(
+    row: InspectionRow,
+    dims?: { widthEmu: number; heightEmu: number },
+  ): Promise<Blob> {
+    const data = new FormData();
+    data.append("file", row.file);
+    data.append("gtin", row.scanResult.expectedGtin);
+    data.append("lotCode", row.scanResult.expectedLotCode);
+    data.append("bestBefore", row.scanResult.expectedBestBefore);
+    if (dims) {
+      data.append("widthEmu", String(dims.widthEmu));
+      data.append("heightEmu", String(dims.heightEmu));
+    }
+
+    const response = await fetch("/api/labels/repair", {
+      method: "POST",
+      body: data,
+    });
+
+    if (!response.ok) {
+      const err = (await response.json()) as { error?: string };
+      throw new Error(err.error ?? `Repair failed for ${row.filename}.`);
+    }
+
+    return response.blob();
+  }
+
+  // Fix and Download ALL: correct labels pass through unchanged, mismatched
+  // labels are patched in place (barcode replaced at its original size and
+  // position) and prefixed with [FIXED]; everything is bundled into Labels.zip.
+  async function handleDownloadAll() {
+    const targets = rows;
+    if (!targets.length || isDownloadingAll) return;
+
+    setIsDownloadingAll(true);
+    setBatchProgress({ done: 0, total: targets.length, current: "" });
+
+    const zip = new JSZip();
+    const fixedIds = new Set<string>();
+    let okCount = 0;
+    let fixedCount = 0;
+    let skipped = 0;
 
     try {
-      const data = new FormData();
-      for (const row of targetRows) {
-        data.append("files", row.file);
+      for (let index = 0; index < targets.length; index += 1) {
+        const row = targets[index];
+        setBatchProgress({ done: index, total: targets.length, current: row.filename });
+
+        const isOk = row.scanResult.status === "ready" || row.isRepaired;
+        if (isOk) {
+          zip.file(row.filename, row.file);
+          okCount += 1;
+          continue;
+        }
+
+        if (!row.scanResult.expectedGtin) {
+          zip.file(row.filename, row.file);
+          skipped += 1;
+          continue;
+        }
+
+        const blob = await repairRow(row);
+        zip.file(`[FIXED] ${row.filename}`, blob);
+        fixedIds.add(row.id);
+        fixedCount += 1;
       }
 
-      const response = await fetch("/api/labels/batch-repair", {
-        method: "POST",
-        body: data,
-      });
+      setBatchProgress({ done: targets.length, total: targets.length, current: "" });
 
-      if (!response.ok) {
-        const err = (await response.json()) as { error?: string };
-        throw new Error(err.error ?? "Batch repair failed.");
-      }
+      const zipBlob = await zip.generateAsync({ type: "blob" });
+      downloadBlob(zipBlob, "Labels.zip");
 
-      const blob = await response.blob();
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = "repaired-labels.zip";
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      setTimeout(() => URL.revokeObjectURL(url), 60000);
-
-      // Mark all repaired
-      const targetIds = new Set(targetRows.map((r) => r.id));
       setRows((prev) =>
         prev.map((r) =>
-          targetIds.has(r.id)
+          fixedIds.has(r.id)
             ? {
                 ...r,
                 isRepaired: true,
                 scanResult: {
                   ...r.scanResult,
                   status: "ready",
+                  scannedGtin: r.scanResult.expectedGtin,
+                  scannedBarcodeNumber: r.scanResult.expectedBarcodeNumber,
+                  scannedRaw: r.scanResult.expectedBarcodeText,
                   mismatches: [],
-                  detail: "Batch repaired: replacement barcode generated.",
+                  detail: "Repaired: barcode replaced with the authoritative barcode number.",
                 },
               }
             : r,
         ),
       );
-      setRepairMessage(`Successfully repaired and downloaded ${targetRows.length} labels in ZIP.`);
+
+      const summary = `Labels.zip downloaded: ${okCount} correct, ${fixedCount} fixed`;
+      setRepairMessage(skipped > 0 ? `${summary}, ${skipped} could not be repaired (no GTIN found).` : `${summary}.`);
     } catch (error) {
-      setToastMessage(error instanceof Error ? error.message : "Batch repair failed.");
+      setToastMessage(error instanceof Error ? error.message : "Batch fix failed.");
     } finally {
-      setIsBatchRepairing(false);
+      setIsDownloadingAll(false);
+      setBatchProgress({ done: 0, total: 0, current: "" });
     }
   }
 
@@ -365,19 +423,31 @@ export default function Home() {
   // Create Mode Actions
   function updateForm(field: keyof typeof form, value: string) {
     setForm((current) => ({ ...current, [field]: value }));
+    setFormSuccess(null);
+    setGtinSuggestion(null);
   }
 
   function validateForm(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     try {
       const payload = buildGs1Payload(form);
-      setFormMessage(
-        `Payload ready: ${payload.humanReadable}. Barcode data contains no parentheses.`,
+      setFormMessage("Payload ready. You can generate the label.");
+      setFormSuccess(
+        `Barcode payload is valid: ${payload.humanReadable}. Encoded barcode data contains no parentheses.`,
       );
+      setGtinSuggestion(null);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Check the label fields.";
-      setFormMessage(message);
-      setToastMessage(message);
+      const correction = suggestGtinCorrection(form.gtin);
+      if (correction) {
+        setFormMessage(`The GTIN check digit looks wrong — the correct check digit is ${correction.slice(-1)}.`);
+        setGtinSuggestion(correction);
+      } else {
+        setFormMessage(message);
+        setGtinSuggestion(null);
+      }
+      setFormSuccess(null);
+      setToastMessage(correction ? "GTIN check digit error — suggestion available." : message);
     }
   }
 
@@ -402,12 +472,7 @@ export default function Home() {
         throw new Error(result.error ?? "Label generation failed.");
       }
       const blob = await response.blob();
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = `${form.productName.replace(/[^a-z0-9]+/gi, "-") || "generated-label"}.docx`;
-      link.click();
-      URL.revokeObjectURL(url);
+      downloadBlob(blob, `${form.productName.replace(/[^a-z0-9]+/gi, "-") || "generated-label"}.docx`);
       setFormMessage("DOCX ready. Barcode generated without human-readable digits beneath.");
     } catch (error) {
       const message = error instanceof Error ? error.message : "Label generation failed.";
@@ -418,8 +483,38 @@ export default function Home() {
     }
   }
 
-  const checkedRows = rows.filter((r) => selectedCheckedIds.has(r.id));
-  const mismatchedRows = rows.filter((r) => r.scanResult.status !== "ready" && !r.isRepaired);
+  // Label pager: Previous/Next + swipe navigation between uploaded labels
+  function stepLabel(direction: 1 | -1) {
+    if (rows.length < 2) return;
+    const currentIndex = Math.max(
+      0,
+      rows.findIndex((r) => r.id === selectedRow?.id),
+    );
+    const nextIndex = (currentIndex + direction + rows.length) % rows.length;
+    setSelectedId(rows[nextIndex].id);
+    setRepairMessage("");
+  }
+
+  const touchStartRef = useRef<{ x: number; y: number } | null>(null);
+
+  function handleTouchStart(event: React.TouchEvent) {
+    const touch = event.touches[0];
+    touchStartRef.current = { x: touch.clientX, y: touch.clientY };
+  }
+
+  function handleTouchEnd(event: React.TouchEvent) {
+    const start = touchStartRef.current;
+    if (!start) return;
+    const touch = event.changedTouches[0];
+    const deltaX = touch.clientX - start.x;
+    const deltaY = touch.clientY - start.y;
+    if (Math.abs(deltaX) > 60 && Math.abs(deltaY) < 80) {
+      stepLabel(deltaX < 0 ? 1 : -1);
+    }
+    touchStartRef.current = null;
+  }
+
+  const selectedLabelIndex = selectedRow ? rows.findIndex((r) => r.id === selectedRow.id) + 1 : 0;
 
   return (
     <main className="app-shell">
@@ -434,277 +529,538 @@ export default function Home() {
       ) : null}
 
       <header className="topbar">
-        <div className="brand-lockup">
-          <div className="brand-mark" aria-hidden="true">LT</div>
-          <div>
-            <p className="eyebrow">Label operations</p>
-            <h1>Label Tag Studio</h1>
-          </div>
-        </div>
-        <div className="topbar-note">
-          <span className="status-dot" /> Local barcode verification engine
+        <button type="button" className="brand-lockup brand-home" onClick={() => setMode("home")}>
+          <span className="brand-mark" aria-hidden="true">LT</span>
+          <span className="brand-copy">
+            <span className="eyebrow">Label operations</span>
+            <span className="brand-title">Label Tag Studio</span>
+          </span>
+        </button>
+        <div className="topbar-actions">
+          <Link className="guide-link" href="/guide">
+            User guide
+          </Link>
+          <InstallButton />
+          <span className="topbar-note">
+            <span className="status-dot" /> Local barcode verification engine
+          </span>
         </div>
       </header>
 
-      <section className="hero-row">
-        <div>
-          <p className="eyebrow">Label operations</p>
-          <h2>Print-ready labels with barcodes you can trust.</h2>
-          <p className="hero-copy">
-            Fill in the product details to build a Canada-compliant GS1 label, or upload existing
-            label files and let the scanner verify every barcode number, lot code, and best-before
-            date against what is written on the label.
-          </p>
-        </div>
-        <div className="mode-switch" role="tablist" aria-label="Workflow mode">
-          <button
-            className={mode === "create" ? "mode-button active" : "mode-button"}
-            onClick={() => setMode("create")}
-            role="tab"
-            aria-selected={mode === "create"}
-          >
-            <span className="mode-step" aria-hidden="true">1</span>
-            <span className="mode-text">
-              <strong>Create a label</strong>
-              <small>Fill in details, download a DOCX</small>
-            </span>
-          </button>
-          <button
-            className={mode === "inspect" ? "mode-button active" : "mode-button"}
-            onClick={() => setMode("inspect")}
-            role="tab"
-            aria-selected={mode === "inspect"}
-          >
-            <span className="mode-step" aria-hidden="true">2</span>
-            <span className="mode-text">
-              <strong>Check &amp; fix labels</strong>
-              <small>Upload files, scan barcodes, repair</small>
-            </span>
-          </button>
-        </div>
-      </section>
-
-      <section className="metrics" aria-label="Batch summary">
-        <Metric label="Labels in queue" value={counts.total} accent="ink" />
-        <Metric label="Need fixing" value={counts.attention} accent="coral" />
-        <Metric label="Verified &amp; ready" value={counts.ready} accent="mint" />
-        <div className="metric metric-note">
-          <span className="metric-label">Checks performed</span>
-          <strong>GTIN + Date + Lot</strong>
-          <span className="metric-sub">Full barcode number compare</span>
-        </div>
-      </section>
+      {mode === "home" ? (
+        <section className="home-choice">
+          <div className="home-choice-inner">
+            <p className="eyebrow">Welcome</p>
+            <h2>What would you like to do?</h2>
+            <div className="choice-grid">
+              <button type="button" className="choice-card" onClick={() => setMode("create")}>
+                <span className="choice-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
+                    <rect x="4" y="2.5" width="16" height="19" rx="1.5" />
+                    <path d="M8 7h8M8 11h8M8 15h4" />
+                  </svg>
+                </span>
+                <strong>Create a label</strong>
+                <span className="choice-copy">
+                  Fill in the product details and download a print-ready 6x4 DOCX with a verified
+                  GS1 barcode.
+                </span>
+                <span className="choice-cta">Start creating &rarr;</span>
+              </button>
+              <button type="button" className="choice-card" onClick={() => setMode("inspect")}>
+                <span className="choice-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
+                    <path d="M3 7V4.5A1.5 1.5 0 0 1 4.5 3H7M17 3h2.5A1.5 1.5 0 0 1 21 4.5V7M21 17v2.5a1.5 1.5 0 0 1-1.5 1.5H17M7 21H4.5A1.5 1.5 0 0 1 3 19.5V17" />
+                    <path d="M7 8.5v7M10.5 8.5v7M14 8.5v7M17 8.5v7" />
+                  </svg>
+                </span>
+                <strong>Check &amp; fix labels</strong>
+                <span className="choice-copy">
+                  Upload label files (or a ZIP) — scan every barcode, spot errors, and download
+                  fixed copies in one ZIP.
+                </span>
+                <span className="choice-cta">Start checking &rarr;</span>
+              </button>
+            </div>
+            <p className="home-hint">
+              New here? Read the <Link href="/guide">step-by-step guide</Link> with screenshots.
+            </p>
+          </div>
+        </section>
+      ) : null}
 
       {mode === "create" ? (
         <section className="workspace create-workspace">
-          <form className="panel create-form" onSubmit={validateForm}>
-            <div className="panel-heading">
-              <div>
-                <p className="eyebrow">New label</p>
-                <h3>Label details</h3>
+          <button type="button" className="back-button" onClick={() => setMode("home")}>
+            &larr; Back
+          </button>
+          <div className="workspace-panels">
+            <form className="panel create-form" onSubmit={validateForm}>
+              <div className="panel-heading">
+                <div>
+                  <p className="eyebrow">New label</p>
+                  <h3>Label details</h3>
+                </div>
+                <span className="step-chip">Create</span>
               </div>
-              <span className="step-chip">01 / 02</span>
-            </div>
-            <div className="form-grid">
-              <Field label="Product name" value={form.productName} onChange={(v) => updateForm("productName", v)} placeholder={formPlaceholders.productName} />
-              <Field label="Item number" value={form.itemNumber} onChange={(v) => updateForm("itemNumber", v)} placeholder={formPlaceholders.itemNumber} />
-              <Field label="GTIN / barcode number" value={form.gtin} onChange={(v) => updateForm("gtin", v)} wide inputMode="numeric" placeholder={formPlaceholders.gtin} />
-              <Field label="Lot code" value={form.lotCode} onChange={(v) => updateForm("lotCode", v)} placeholder={formPlaceholders.lotCode} />
-              <DateField label="Best before" value={form.bestBefore} onChange={(v) => updateForm("bestBefore", v)} placeholder="e.g. 2025-09-23" hint="Type YYYY-MM-DD or use the calendar" />
-              <Field label="Storage instruction" value={form.storageInstruction} onChange={(v) => updateForm("storageInstruction", v)} wide placeholder={formPlaceholders.storageInstruction} />
-              <label className="field wide">
-                <span>Ingredients</span>
-                <textarea value={form.ingredients} onChange={(e) => updateForm("ingredients", e.target.value)} rows={4} placeholder={formPlaceholders.ingredients} />
-              </label>
-            </div>
-            <div className="form-footer">
-              <p className={`form-message ${formMessage.includes("Error") ? "form-message-error" : ""}`} role="status">
-                {formMessage}
-              </p>
-              <div className="form-actions">
-                <button className="secondary-button" type="submit">Validate</button>
-                <button className="primary-button" type="button" onClick={generateDocument} disabled={isGenerating}>
-                  {isGenerating ? "Building..." : "Generate DOCX"} <span aria-hidden="true">-&gt;</span>
-                </button>
+
+              {formSuccess ? (
+                <div className="success-banner" role="status">
+                  <div>
+                    <strong>Validation passed</strong>
+                    <span>{formSuccess}</span>
+                  </div>
+                  <button type="button" aria-label="Dismiss success message" onClick={() => setFormSuccess(null)}>
+                    x
+                  </button>
+                </div>
+              ) : null}
+
+              <div className="form-grid">
+                <Field label="Product name" value={form.productName} onChange={(v) => updateForm("productName", v)} placeholder={formPlaceholders.productName} />
+                <Field label="Item number" value={form.itemNumber} onChange={(v) => updateForm("itemNumber", v)} placeholder={formPlaceholders.itemNumber} />
+                <Field label="GTIN / barcode number" value={form.gtin} onChange={(v) => updateForm("gtin", v)} wide inputMode="numeric" placeholder={formPlaceholders.gtin} />
+                <Field label="Lot code" value={form.lotCode} onChange={(v) => updateForm("lotCode", v)} placeholder={formPlaceholders.lotCode} />
+                <DateField label="Best before" value={form.bestBefore} onChange={(v) => updateForm("bestBefore", v)} placeholder="e.g. 2025-09-23" hint="Type YYYY-MM-DD or use the calendar" />
+                <Field label="Storage instruction" value={form.storageInstruction} onChange={(v) => updateForm("storageInstruction", v)} placeholder={formPlaceholders.storageInstruction} />
+                <label className="field wide">
+                  <span>Ingredients</span>
+                  <textarea value={form.ingredients} onChange={(e) => updateForm("ingredients", e.target.value)} rows={4} placeholder={formPlaceholders.ingredients} />
+                </label>
               </div>
+              <div className="form-footer">
+                <div className="form-message-wrap">
+                  <p className={`form-message ${formMessage.includes("Error") || formMessage.includes("wrong") || formMessage.includes("Enter a") ? "form-message-error" : ""}`} role="status">
+                    {formMessage}
+                  </p>
+                  {gtinSuggestion ? (
+                    <button
+                      type="button"
+                      className="text-link-btn"
+                      onClick={() => {
+                        updateForm("gtin", gtinSuggestion);
+                        setFormMessage(`GTIN updated to the suggested value ${gtinSuggestion}.`);
+                      }}
+                    >
+                      Use suggested GTIN {gtinSuggestion}
+                    </button>
+                  ) : null}
+                </div>
+                <div className="form-actions">
+                  <button className="secondary-button" type="submit">Validate</button>
+                  <button className="primary-button" type="button" onClick={generateDocument} disabled={isGenerating}>
+                    {isGenerating ? "Building..." : "Generate DOCX"} <span aria-hidden="true">-&gt;</span>
+                  </button>
+                </div>
+              </div>
+            </form>
+            <div className="preview-wrap">
+              <PdfLabelPreview
+                productName={form.productName}
+                itemNumber={form.itemNumber}
+                lotCode={form.lotCode}
+                bestBefore={form.bestBefore}
+                ingredients={form.ingredients}
+                storageInstruction={form.storageInstruction}
+                gtin={form.gtin}
+                barcodePreviewUrl={barcodePreviewUrl}
+              />
             </div>
-          </form>
-          <div className="preview-wrap">
-            <PdfLabelPreview
-              productName={form.productName}
-              itemNumber={form.itemNumber}
-              lotCode={form.lotCode}
-              bestBefore={form.bestBefore}
-              ingredients={form.ingredients}
-              storageInstruction={form.storageInstruction}
-              gtin={form.gtin}
-              barcodePreviewUrl={barcodePreviewUrl}
-            />
           </div>
         </section>
-      ) : (
-        <section className="workspace inspect-workspace">
-          {/* LEFT: Queue & Batch Actions */}
-          <div className="panel queue-panel">
-            <div className="panel-heading">
-              <div>
-                <p className="eyebrow">Batch inspection</p>
-                <h3>Label queue</h3>
-              </div>
-              <label className="upload-button">
-                {isScanning ? "Scanning..." : "Upload labels (.docx)"}
-                <input
-                  type="file"
-                  accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                  multiple
-                  disabled={isScanning}
-                  onChange={handleUpload}
-                />
-              </label>
+      ) : null}
+
+      {mode === "inspect" ? (
+        <>
+          <section className="metrics" aria-label="Batch summary">
+            <Metric label="Labels in queue" value={counts.total} accent="ink" />
+            <Metric label="Need fixing" value={counts.attention} accent="coral" />
+            <Metric label="Verified &amp; ready" value={counts.ready} accent="mint" />
+            <div className="metric metric-chart">
+              <span className="metric-label">Batch health</span>
+              <StatusDonut ready={counts.ready} attention={counts.attention} error={counts.error} />
             </div>
+          </section>
 
-            {/* Batch Toolbar */}
-            {rows.length > 0 ? (
-              <div className="batch-toolbar">
-                <div className="batch-selection-info">
-                  <label className="checkbox-label">
-                    <input
-                      type="checkbox"
-                      checked={rows.length > 0 && selectedCheckedIds.size === rows.length}
-                      onChange={toggleSelectAll}
-                    />
-                    <span>Select all ({rows.length})</span>
-                  </label>
-                  {mismatchedRows.length > 0 ? (
-                    <button type="button" className="text-link-btn" onClick={selectAllMismatched}>
-                      Select mismatched ({mismatchedRows.length})
-                    </button>
-                  ) : null}
-                </div>
-
-                <div className="batch-actions-buttons">
-                  {checkedRows.length > 0 ? (
-                    <button
-                      type="button"
-                      className="batch-action-btn"
-                      onClick={() => handleBatchRepair(checkedRows)}
-                      disabled={isBatchRepairing}
-                    >
-                      {isBatchRepairing ? "Fixing..." : `Fix selected (${checkedRows.length})`}
-                    </button>
-                  ) : mismatchedRows.length > 0 ? (
-                    <button
-                      type="button"
-                      className="batch-action-btn coral"
-                      onClick={() => handleBatchRepair(mismatchedRows)}
-                      disabled={isBatchRepairing}
-                    >
-                      {isBatchRepairing ? "Fixing..." : `Fix all mismatched (${mismatchedRows.length})`}
-                    </button>
-                  ) : null}
-                </div>
-              </div>
-            ) : null}
-
-            {/* Queue Items */}
-            <div className="queue-list">
-              {isScanning ? (
-                <div className="scanning-indicator">
-                  <span className="spinner" />
+          <section className="workspace inspect-workspace">
+            <button type="button" className="back-button" onClick={() => setMode("home")}>
+              &larr; Back
+            </button>
+            <div className="workspace-panels">
+              {/* LEFT: Queue & Batch Actions */}
+              <div className="panel queue-panel">
+                <div className="panel-heading">
                   <div>
-                    <strong>Scanning uploaded labels...</strong>
-                    <p>Extracting embedded artwork and decoding 1D barcodes</p>
+                    <p className="eyebrow">Batch inspection</p>
+                    <h3>Label queue</h3>
                   </div>
+                  <label className="upload-button">
+                    {isScanning ? "Scanning..." : "Upload labels (.docx / .zip)"}
+                    <input
+                      type="file"
+                      accept=".docx,.zip,application/zip,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                      multiple
+                      disabled={isScanning || isDownloadingAll}
+                      onChange={handleUpload}
+                    />
+                  </label>
                 </div>
-              ) : rows.length ? (
-                rows.map((row) => {
-                  const isReady = row.scanResult.status === "ready" || row.isRepaired;
-                  const isAttention = row.scanResult.status === "attention" && !row.isRepaired;
 
-                  return (
-                    <div
-                      key={row.id}
-                      className={`queue-row-container ${row.id === selectedId ? "selected" : ""}`}
-                    >
-                      <input
-                        type="checkbox"
-                        className="row-checkbox"
-                        checked={selectedCheckedIds.has(row.id)}
-                        onChange={() => toggleCheck(row.id)}
-                        aria-label={`Select ${row.filename}`}
-                      />
+                {/* Batch Toolbar */}
+                {rows.length > 0 ? (
+                  <div className="batch-toolbar">
+                    <div className="batch-selection-info">
+                      <strong>
+                        {rows.length} label{rows.length === 1 ? "" : "s"} in queue
+                      </strong>
+                      <span>
+                        {mismatchedRows.length > 0
+                          ? `${mismatchedRows.length} need fixing`
+                          : "all verified"}
+                      </span>
+                    </div>
+
+                    <div className="batch-actions-buttons">
                       <button
                         type="button"
-                        className="queue-row-btn"
-                        onClick={() => {
-                          setSelectedId(row.id);
-                          setRepairMessage("");
-                        }}
+                        className="batch-action-btn ghost"
+                        onClick={handleClearAll}
+                        disabled={isDownloadingAll}
                       >
-                        <span className="queue-main">
-                          <strong>{row.scanResult.productName || row.filename}</strong>
-                          <small>
-                            {row.filename} &bull; Expected GTIN: {row.scanResult.expectedGtin || "None"}
-                          </small>
-                          {row.scanResult.scannedBarcodeNumber && (
-                            <span className="scanned-badge">
-                              Scanned: <code>{row.scanResult.scannedBarcodeNumber}</code>
-                            </span>
-                          )}
-                        </span>
-                        <span
-                          className={`status-pill ${
-                            isReady ? "ready" : isAttention ? "attention" : "error"
-                          }`}
-                        >
-                          {isReady ? "Ready" : isAttention ? "Mismatch" : "Unreadable"}
-                        </span>
+                        Clear all
                       </button>
+                      {mismatchedRows.length > 0 ? (
+                        <button
+                          type="button"
+                          className="batch-action-btn coral"
+                          onClick={handleDownloadAll}
+                          disabled={isDownloadingAll}
+                        >
+                          {isDownloadingAll ? "Fixing..." : "Fix and Download ALL"}
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          className="batch-action-btn"
+                          onClick={handleDownloadAll}
+                          disabled={isDownloadingAll}
+                        >
+                          {isDownloadingAll ? "Preparing..." : "All files are CORRECT, still want to download?"}
+                        </button>
+                      )}
                     </div>
-                  );
-                })
-              ) : (
-                <div className="queue-empty">
-                  <strong>No labels uploaded</strong>
-                  <span>Upload one or more .docx label files above to scan and check barcodes.</span>
-                </div>
-              )}
-            </div>
-          </div>
+                  </div>
+                ) : null}
 
-          {/* RIGHT: Inspection & Resizable Barcode Repair Workspace */}
-          <div className="panel detail-panel">
-            {selectedRow ? (
-              <InspectionDetail
-                row={selectedRow}
-                boxWidth={boxWidth}
-                boxHeight={boxHeight}
-                setBoxWidth={setBoxWidth}
-                setBoxHeight={setBoxHeight}
-                onStartResize={startResize}
-                isDragging={isDragging}
-                isRepairing={isRepairing}
-                repairMessage={repairMessage}
-                onRepair={() => handleRepair(selectedRow)}
-              />
-            ) : (
-              <div className="empty-detail">
-                <p className="eyebrow">Step 1</p>
-                <h3>Upload label files</h3>
-                <p className="empty-detail-copy">
-                  Select and upload .docx labels to scan the embedded barcodes and compare with the expected barcode numbers.
-                </p>
+                {/* Batch progress bar */}
+                {isDownloadingAll && batchProgress.total > 0 ? (
+                  <div className="progress-wrap">
+                    <div
+                      className="progress-bar"
+                      role="progressbar"
+                      aria-valuemin={0}
+                      aria-valuemax={batchProgress.total}
+                      aria-valuenow={batchProgress.done}
+                    >
+                      <div
+                        className="progress-fill"
+                        style={{
+                          width: `${Math.min(
+                            100,
+                            Math.round((batchProgress.done / batchProgress.total) * 100),
+                          )}%`,
+                        }}
+                      />
+                    </div>
+                    <small>
+                      Fixing {batchProgress.done + 1} of {batchProgress.total}
+                      {batchProgress.current ? `: ${batchProgress.current}` : ""}
+                    </small>
+                  </div>
+                ) : null}
+
+                {/* Queue Items */}
+                <div className="queue-list">
+                  {isScanning ? (
+                    <div className="scanning-indicator">
+                      <span className="spinner" />
+                      <div>
+                        <strong>Scanning uploaded labels...</strong>
+                        <p>Extracting embedded artwork and decoding 1D barcodes</p>
+                      </div>
+                    </div>
+                  ) : rows.length ? (
+                    rows.map((row) => {
+                      const isReady = row.scanResult.status === "ready" || row.isRepaired;
+                      const isAttention = row.scanResult.status === "attention" && !row.isRepaired;
+
+                      return (
+                        <div
+                          key={row.id}
+                          className={`queue-row-container ${row.id === selectedRow?.id ? "selected" : ""}`}
+                        >
+                          <button
+                            type="button"
+                            className="queue-row-btn"
+                            onClick={() => {
+                              setSelectedId(row.id);
+                              setRepairMessage("");
+                            }}
+                          >
+                            <span className="queue-main">
+                              <strong>{row.scanResult.productName || row.filename}</strong>
+                              <small>
+                                {row.filename} &bull; Expected: {row.scanResult.expectedBarcodeNumber || row.scanResult.expectedGtin || "None"}
+                              </small>
+                              {row.scanResult.scannedBarcodeNumber && (
+                                <span className="scanned-badge">
+                                  Scanned: <code>{row.scanResult.scannedBarcodeNumber}</code>
+                                </span>
+                              )}
+                            </span>
+                            <span
+                              className={`status-pill ${
+                                isReady ? "ready" : isAttention ? "attention" : "error"
+                              }`}
+                            >
+                              {isReady ? "Ready" : isAttention ? "Mismatch" : "Unreadable"}
+                            </span>
+                          </button>
+                        </div>
+                      );
+                    })
+                  ) : (
+                    <div className="queue-empty">
+                      <strong>No labels uploaded</strong>
+                      <span>
+                        Upload one or more .docx label files, or a .zip containing several labels,
+                        to scan and check barcodes.
+                      </span>
+                    </div>
+                  )}
+                </div>
               </div>
-            )}
-          </div>
-        </section>
-      )}
+
+              {/* RIGHT: Inspection & Resizable Barcode Repair Workspace */}
+              <div
+                className="panel detail-panel"
+                onTouchStart={handleTouchStart}
+                onTouchEnd={handleTouchEnd}
+              >
+                {rows.length > 1 ? (
+                  <div className="label-pager">
+                    <button type="button" onClick={() => stepLabel(-1)}>
+                      &larr; Previous
+                    </button>
+                    <span>
+                      Label {selectedLabelIndex} of {rows.length}
+                    </span>
+                    <button type="button" onClick={() => stepLabel(1)}>
+                      Next &rarr;
+                    </button>
+                  </div>
+                ) : null}
+
+                {selectedRow ? (
+                  <InspectionDetail
+                    row={selectedRow}
+                    boxWidth={boxWidth}
+                    boxHeight={boxHeight}
+                    setBoxWidth={setBoxWidth}
+                    setBoxHeight={setBoxHeight}
+                    onStartResize={startResize}
+                    isDragging={isDragging}
+                    isRepairing={isRepairing}
+                    repairMessage={repairMessage}
+                    onRepair={() => handleRepair(selectedRow)}
+                  />
+                ) : (
+                  <div className="empty-detail">
+                    <p className="eyebrow">Step 1</p>
+                    <h3>Upload label files</h3>
+                    <p className="empty-detail-copy">
+                      Select and upload .docx labels (or a .zip with several) to scan the embedded
+                      barcodes and compare them with the expected barcode numbers.
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
+          </section>
+        </>
+      ) : null}
 
       <footer className="footer-note">
-        <span>GS1 Canada GTIN validation active &bull; Barcode scanning with Code 128 / GS1-128 decoder</span>
-        <span>Local DOCX package mutation &bull; Formatting and logo preserved</span>
+        <span>
+          GS1 Canada GTIN validation active &bull; Barcode scanning with Code 128 / GS1-128 decoder
+        </span>
+        <span>
+          Local DOCX package mutation &bull; Formatting and logo preserved &bull;{" "}
+          <Link href="/guide">User guide</Link>
+        </span>
       </footer>
+
+      <nav className="mobile-nav" aria-label="Primary">
+        <button type="button" className={mode === "home" ? "active" : ""} onClick={() => setMode("home")}>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+            <path d="M3 10.5 12 3l9 7.5V21h-6v-6h-6v6H3z" />
+          </svg>
+          Home
+        </button>
+        <button type="button" className={mode === "create" ? "active" : ""} onClick={() => setMode("create")}>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+            <path d="M12 5v14M5 12h14" />
+          </svg>
+          Create
+        </button>
+        <button type="button" className={mode === "inspect" ? "active" : ""} onClick={() => setMode("inspect")}>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+            <path d="M3 7V4.5A1.5 1.5 0 0 1 4.5 3H7M17 3h2.5A1.5 1.5 0 0 1 21 4.5V7M21 17v2.5a1.5 1.5 0 0 1-1.5 1.5H17M7 21H4.5A1.5 1.5 0 0 1 3 19.5V17" />
+          </svg>
+          Check
+        </button>
+        <Link href="/guide">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+            <path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v15H6.5A2.5 2.5 0 0 0 4 20.5z" />
+            <path d="M4 20.5A2.5 2.5 0 0 1 6.5 18H20" />
+          </svg>
+          Guide
+        </Link>
+      </nav>
     </main>
+  );
+
+  function downloadBlob(blob: Blob, filename: string) {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  }
+}
+
+function InstallButton() {
+  const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(null);
+  const [showHelp, setShowHelp] = useState(false);
+
+  useEffect(() => {
+    function onBeforeInstallPrompt(event: Event) {
+      event.preventDefault();
+      setDeferredPrompt(event as BeforeInstallPromptEvent);
+    }
+    window.addEventListener("beforeinstallprompt", onBeforeInstallPrompt);
+    return () => window.removeEventListener("beforeinstallprompt", onBeforeInstallPrompt);
+  }, []);
+
+  const isIOS =
+    typeof navigator !== "undefined" && /iphone|ipad|ipod/i.test(navigator.userAgent);
+
+  return (
+    <div className="install-wrap">
+      <button
+        type="button"
+        className="install-button"
+        onClick={() => {
+          if (deferredPrompt) {
+            void deferredPrompt.prompt();
+          } else {
+            setShowHelp((visible) => !visible);
+          }
+        }}
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+          <path d="M12 3v12m0 0 4.5-4.5M12 15l-4.5-4.5M4 19h16" />
+        </svg>
+        Install
+      </button>
+      {showHelp ? (
+        <div className="install-help" role="dialog" aria-label="Install instructions">
+          <strong>Install on your device</strong>
+          {isIOS ? (
+            <p>
+              Tap the <strong>Share</strong> button in Safari, then choose{" "}
+              <strong>Add to Home Screen</strong>.
+            </p>
+          ) : (
+            <p>
+              Open your browser menu and choose <strong>Install app</strong> or{" "}
+              <strong>Add to Home screen</strong>.
+            </p>
+          )}
+          <button type="button" className="text-link-btn" onClick={() => setShowHelp(false)}>
+            Close
+          </button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function StatusDonut({
+  ready,
+  attention,
+  error,
+}: {
+  ready: number;
+  attention: number;
+  error: number;
+}) {
+  const total = ready + attention + error;
+  const radius = 52;
+  const circumference = 2 * Math.PI * radius;
+  const segments = [
+    { label: "Verified", value: ready, color: "#4e8e70" },
+    { label: "Needs fixing", value: attention, color: "#a26024" },
+    { label: "Unreadable", value: error, color: "#b74932" },
+  ];
+  let offset = 0;
+
+  return (
+    <div className="donut-wrap">
+      <svg viewBox="0 0 140 140" className="donut" role="img" aria-label={`${ready} verified, ${attention} need fixing, ${error} unreadable`}>
+        <circle cx="70" cy="70" r={radius} fill="none" stroke="#e5e1d6" strokeWidth="15" />
+        {total > 0
+          ? segments
+              .filter((s) => s.value > 0)
+              .map((s) => {
+                const length = (s.value / total) * circumference;
+                const element = (
+                  <circle
+                    key={s.label}
+                    cx="70"
+                    cy="70"
+                    r={radius}
+                    fill="none"
+                    stroke={s.color}
+                    strokeWidth="15"
+                    strokeDasharray={`${length} ${circumference - length}`}
+                    strokeDashoffset={-offset}
+                    transform="rotate(-90 70 70)"
+                  />
+                );
+                offset += length;
+                return element;
+              })
+          : null}
+        <text x="70" y="68" textAnchor="middle" className="donut-total">
+          {total}
+        </text>
+        <text x="70" y="84" textAnchor="middle" className="donut-label">
+          labels
+        </text>
+      </svg>
+      <ul className="donut-legend">
+        {segments.map((s) => (
+          <li key={s.label}>
+            <span className="legend-dot" style={{ background: s.color }} />
+            {s.label}: <strong>{s.value}</strong>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
@@ -774,7 +1130,7 @@ function InspectionDetail({
     <>
       <div className="panel-heading">
         <div>
-          <p className="eyebrow">Label inspection & fix</p>
+          <p className="eyebrow">Label inspection &amp; fix</p>
           <h3>{scanResult.productName || row.filename}</h3>
         </div>
         <span className={`status-pill ${isMatch ? "ready" : "attention"}`}>
@@ -794,7 +1150,7 @@ function InspectionDetail({
       <div className="comparison-card">
         <div className="comparison-heading">
           <span className="eyebrow">Barcode verification analysis</span>
-          <span className="info-chip">Actual scan vs Expected number</span>
+          <span className="info-chip">Actual scan vs written number</span>
         </div>
 
         <div className="comparison-grid">
@@ -885,90 +1241,129 @@ function InspectionDetail({
           </div>
         </div>
       ) : (
-      <div className="repair-box-workspace">
-        <div className="repair-box-header">
-          <div>
-            <span className="eyebrow">Replacement barcode placement & sizing</span>
-            <strong>Resizable Barcode Box</strong>
+        <div className="repair-box-workspace">
+          <div className="repair-box-header">
+            <div>
+              <span className="eyebrow">Replacement barcode placement &amp; sizing</span>
+              <strong>Resizable Barcode Box</strong>
+            </div>
+            <div className="dimension-controls">
+              <label className="dim-label">
+                <span>W (px):</span>
+                <input
+                  type="number"
+                  min="120"
+                  max="340"
+                  value={boxWidth}
+                  onChange={(e) => setBoxWidth(Number(e.target.value))}
+                />
+              </label>
+              <label className="dim-label">
+                <span>H (px):</span>
+                <input
+                  type="number"
+                  min="35"
+                  max="140"
+                  value={boxHeight}
+                  onChange={(e) => setBoxHeight(Number(e.target.value))}
+                />
+              </label>
+              <button
+                type="button"
+                className="preset-btn"
+                onClick={() => {
+                  setBoxWidth(280);
+                  setBoxHeight(65);
+                }}
+              >
+                Reset 6x4
+              </button>
+            </div>
           </div>
-          <div className="dimension-controls">
-            <label className="dim-label">
-              <span>W (px):</span>
-              <input
-                type="number"
-                min="120"
-                max="340"
-                value={boxWidth}
-                onChange={(e) => setBoxWidth(Number(e.target.value))}
-              />
-            </label>
-            <label className="dim-label">
-              <span>H (px):</span>
-              <input
-                type="number"
-                min="35"
-                max="140"
-                value={boxHeight}
-                onChange={(e) => setBoxHeight(Number(e.target.value))}
-              />
-            </label>
-            <button
-              type="button"
-              className="preset-btn"
-              onClick={() => {
-                setBoxWidth(280);
-                setBoxHeight(65);
-              }}
-            >
-              Reset 6x4
-            </button>
-          </div>
-        </div>
 
-        <p className="repair-hint">
-          Drag the bottom-right corner of the rectangle box below to adjust the replacement barcode size in the DOCX label:
-        </p>
+          <p className="repair-hint">
+            Drag the bottom-right corner of the rectangle box below to adjust the replacement barcode size in the DOCX label:
+          </p>
 
-        {/* Resizable Box Canvas */}
-        <div className="resizable-canvas-container">
-          <div
-            className={`resizable-barcode-box ${isDragging ? "resizing" : ""}`}
-            style={{ width: `${boxWidth}px`, height: `${boxHeight}px` }}
-          >
-            {replacementUrl ? (
-              <img src={replacementUrl} alt="Replacement barcode" className="replacement-barcode-img" />
-            ) : (
-              <div className="barcode-placeholder">Generating correct barcode...</div>
-            )}
-            <span className="dimension-pill">
-              {boxWidth} &times; {boxHeight} px
-            </span>
-            {/* Drag Handle */}
+          {/* Resizable Box Canvas */}
+          <div className="resizable-canvas-container">
             <div
-              className="resize-handle"
-              onMouseDown={onStartResize}
-              title="Drag to resize barcode box"
-            />
+              className={`resizable-barcode-box ${isDragging ? "resizing" : ""}`}
+              style={{ width: `${boxWidth}px`, height: `${boxHeight}px` }}
+            >
+              {replacementUrl ? (
+                <img src={replacementUrl} alt="Replacement barcode" className="replacement-barcode-img" />
+              ) : (
+                <div className="barcode-placeholder">Generating correct barcode...</div>
+              )}
+              <span className="dimension-pill">
+                {boxWidth} &times; {boxHeight} px
+              </span>
+              {/* Drag Handle */}
+              <div
+                className="resize-handle"
+                onMouseDown={onStartResize}
+                title="Drag to resize barcode box"
+              />
+            </div>
+            <small className="canvas-footnote">
+              Generated according to Canada GTIN rules with no digits underneath the bars
+            </small>
           </div>
-          <small className="canvas-footnote">
-            Generated according to Canada GTIN rules with no digits underneath the bars
-          </small>
-        </div>
 
-        <div className="repair-actions">
-          <button
-            className="primary-button"
-            type="button"
-            onClick={onRepair}
-            disabled={isRepairing}
-          >
-            {isRepairing ? "Repairing..." : "Replace Barcode & Download DOCX"} <span aria-hidden="true">-&gt;</span>
-          </button>
-          {repairMessage ? <p className="repair-message">{repairMessage}</p> : null}
+          <div className="repair-actions">
+            <button
+              className="primary-button"
+              type="button"
+              onClick={onRepair}
+              disabled={isRepairing}
+            >
+              {isRepairing ? "Repairing..." : "Replace Barcode & Download DOCX"} <span aria-hidden="true">-&gt;</span>
+            </button>
+            {repairMessage ? <p className="repair-message">{repairMessage}</p> : null}
+          </div>
         </div>
-      </div>
       )}
     </>
+  );
+}
+
+function Metric({ label, value, accent }: { label: string; value: number; accent: string }) {
+  return (
+    <div className={`metric metric-${accent}`}>
+      <span className="metric-label">{label}</span>
+      <strong>{String(value).padStart(2, "0")}</strong>
+      <span className="metric-sub">labels</span>
+    </div>
+  );
+}
+
+function Field({
+  label,
+  value,
+  onChange,
+  wide = false,
+  inputMode,
+  placeholder,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  wide?: boolean;
+  inputMode?: "numeric";
+  placeholder?: string;
+}) {
+  return (
+    <label className={wide ? "field wide" : "field"}>
+      <span>{label}</span>
+      <input
+        type="text"
+        inputMode={inputMode}
+        value={value}
+        placeholder={placeholder}
+        onChange={(event) => onChange(event.target.value)}
+      />
+    </label>
   );
 }
 
@@ -1045,48 +1440,6 @@ function DateField({
   );
 }
 
-function Metric({ label, value, accent }: { label: string; value: number; accent: string }) {
-  return (
-    <div className={`metric metric-${accent}`}>
-      <span className="metric-label">{label}</span>
-      <strong>{String(value).padStart(2, "0")}</strong>
-      <span className="metric-sub">labels</span>
-    </div>
-  );
-}
-
-function Field({
-  label,
-  value,
-  onChange,
-  wide = false,
-  inputMode,
-  placeholder,
-  hint,
-}: {
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-  wide?: boolean;
-  inputMode?: "numeric";
-  placeholder?: string;
-  hint?: string;
-}) {
-  return (
-    <label className={wide ? "field wide" : "field"}>
-      <span>{label}</span>
-      <input
-        type="text"
-        inputMode={inputMode}
-        value={value}
-        placeholder={placeholder}
-        onChange={(event) => onChange(event.target.value)}
-      />
-      {hint ? <small className="field-hint">{hint}</small> : null}
-    </label>
-  );
-}
-
 function PdfLabelPreview({
   productName,
   itemNumber,
@@ -1109,7 +1462,12 @@ function PdfLabelPreview({
   return (
     <div className="pdf-page">
       <img className="preview-logo" src="/api/labels/logo" alt="Template logo" />
-      <div className="preview-title">{productName || "Your product name"}</div>
+      <div
+        className="preview-title"
+        style={{ fontSize: `${(pickTitleFontSize(productName) / 2) * 1.25}px` }}
+      >
+        {productName || "Your product name"}
+      </div>
       <div className="preview-item">ITEM #{itemNumber || "—"}</div>
       <div className="preview-storage">{storageInstruction || "STORAGE"}</div>
       <div className="preview-lot">

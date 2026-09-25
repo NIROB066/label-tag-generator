@@ -158,28 +158,31 @@ function extractFieldsFromDocument(documentXml: string) {
 
   const cleanText = paragraphs.join(" ").replace(/\s+/g, " ").trim();
 
-  // Extract GTIN: check docPr descr first, then visible text (01)10627146285749 or 14-digit GTIN
+  // The number visibly written on the label is the single source of truth.
+  // It supplies the expected GTIN, best-before, and lot; the LOT CODE /
+  // BEST BEFORE text lines and the (invisible) descr alt-text are fallbacks.
+  const writtenNumberMatch = cleanText.match(
+    /\(01\)\d{14}(?:\(15\)\d{6})?(?:\(10\)[A-Za-z0-9]+)?/,
+  );
+  const writtenNumber = writtenNumberMatch ? writtenNumberMatch[0] : null;
+  const parsedWritten = writtenNumber ? parseScannedBarcode(writtenNumber) : null;
+
+  const visibleGtin = parsedWritten?.gtin || cleanText.match(/\b(\d{14})\b/)?.[1] || null;
   const descrMatch = documentXml.match(/<wp:docPr[^>]+descr="[^"]*\(01\)(\d{14})/);
-  const gtinMatch = descrMatch || cleanText.match(/\(01\)(\d{14})/) || cleanText.match(/\b(\d{14})\b/);
-  const expectedGtin = gtinMatch ? gtinMatch[1] : "";
+  const expectedGtin = visibleGtin || (descrMatch ? descrMatch[1] : "");
 
-  // Extract Lot Code: LOT CODE: 72722 or (10)72722
-  const lotMatch =
-    cleanText.match(/LOT\s*CODE\s*:\s*([A-Za-z0-9]+)/i) ||
-    cleanText.match(/\(10\)([A-Za-z0-9]+)/);
-  const expectedLotCode = lotMatch ? lotMatch[1] : "";
+  // LOT CODE / BEST BEFORE text lines (checked against the written number)
+  const lotMatch = cleanText.match(/LOT\s*CODE\s*:\s*([A-Za-z0-9]+)/i);
+  const textLotCode = lotMatch ? lotMatch[1] : "";
 
-  // Extract Best Before: BEST BEFORE: 2025/09/23 or (15)250923
-  let expectedBestBefore = "";
+  let textBestBefore = "";
   const dateMatch = cleanText.match(/BEST\s*BEFORE\s*:\s*(\d{4})[\/\-](\d{2})[\/\-](\d{2})/i);
   if (dateMatch) {
-    expectedBestBefore = `${dateMatch[1]}-${dateMatch[2]}-${dateMatch[3]}`;
-  } else {
-    const ai15Match = cleanText.match(/\(15\)(\d{2})(\d{2})(\d{2})/);
-    if (ai15Match) {
-      expectedBestBefore = `20${ai15Match[1]}-${ai15Match[2]}-${ai15Match[3]}`;
-    }
+    textBestBefore = `${dateMatch[1]}-${dateMatch[2]}-${dateMatch[3]}`;
   }
+
+  const expectedBestBefore = parsedWritten?.bestBefore || textBestBefore;
+  const expectedLotCode = parsedWritten?.lotCode || textLotCode;
 
   // Extract Product Name
   let productName = extractTextBoxText(documentXml, LABEL_TEMPLATE.textBoxes.productName);
@@ -211,9 +214,11 @@ function extractFieldsFromDocument(documentXml: string) {
     LABEL_TEMPLATE.textBoxes.ingredients,
   ).replace(/^Ingredients:\s*/i, "");
 
-  const expectedBarcodeText = expectedGtin
-    ? `(01)${expectedGtin}${expectedBestBefore ? `(15)${expectedBestBefore.replaceAll("-", "").slice(2)}` : ""}${expectedLotCode ? `(10)${expectedLotCode}` : ""}`
-    : cleanText.match(/\(01\)\d{14}[^\s<]*/)?.[0] || "";
+  const expectedBarcodeText =
+    writtenNumber ??
+    (expectedGtin
+      ? `(01)${expectedGtin}${expectedBestBefore ? `(15)${expectedBestBefore.replaceAll("-", "").slice(2)}` : ""}${expectedLotCode ? `(10)${expectedLotCode}` : ""}`
+      : "");
 
   return {
     productName,
@@ -225,6 +230,10 @@ function extractFieldsFromDocument(documentXml: string) {
     expectedStorageInstruction: storageInstruction,
     expectedBarcodeText,
     expectedBarcodeNumber: expectedBarcodeText ? toBarcodeNumber(expectedBarcodeText) : null,
+    writtenLotCode: parsedWritten?.lotCode ?? null,
+    writtenBestBefore: parsedWritten?.bestBefore ?? null,
+    textLotCode,
+    textBestBefore,
   };
 }
 
@@ -425,6 +434,28 @@ function evaluateScanResult(
       actual: barcodeNumber,
       message: `Scanned barcode number ${barcodeNumber} does not equal the written barcode number ${extracted.expectedBarcodeNumber}.`,
       code: "BARCODE_VALUE_MISMATCH",
+    });
+  }
+
+  // Text-line consistency: the LOT CODE / BEST BEFORE lines printed on the
+  // label must match the written barcode number (the truth). Wrong text is
+  // flagged so repair corrects it in place.
+  if (extracted.writtenBestBefore && extracted.textBestBefore && extracted.textBestBefore !== extracted.writtenBestBefore) {
+    mismatches.push({
+      field: "Best Before Text",
+      expected: extracted.writtenBestBefore,
+      actual: extracted.textBestBefore,
+      message: `The BEST BEFORE text on the label (${extracted.textBestBefore.replaceAll("-", "/")}) does not match the best-before in the written barcode number (${extracted.writtenBestBefore.replaceAll("-", "/")}).`,
+      code: "BEST_BEFORE_MISMATCH",
+    });
+  }
+  if (extracted.writtenLotCode && extracted.textLotCode && extracted.textLotCode !== extracted.writtenLotCode) {
+    mismatches.push({
+      field: "Lot Code Text",
+      expected: extracted.writtenLotCode,
+      actual: extracted.textLotCode,
+      message: `The LOT CODE text on the label (${extracted.textLotCode}) does not match the lot in the written barcode number (${extracted.writtenLotCode}).`,
+      code: "LOT_MISMATCH",
     });
   }
 

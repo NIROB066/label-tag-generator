@@ -27,20 +27,51 @@ export function isValidGtin(value: string): boolean {
     return false;
   }
 
-  const digits = normalized.split("").map(Number);
-  const checkDigit = digits.pop();
+  const expectedCheckDigit = gtinCheckDigit(normalized.slice(0, -1));
 
-  if (checkDigit === undefined) {
-    return false;
+  return expectedCheckDigit !== null && expectedCheckDigit === normalized.slice(-1);
+}
+
+/**
+ * Computes the GS1 check digit for a GTIN base (everything except the final
+ * check digit). Accepts 7, 11, 12, or 13 digits (GTIN-8/12/13/14 minus one)
+ * and returns the check digit as a string, or null for invalid input.
+ */
+export function gtinCheckDigit(baseDigits: string): string | null {
+  const normalized = baseDigits.trim().replace(/[\s-]/g, "");
+  const BASE_LENGTHS = new Set([7, 11, 12, 13]);
+
+  if (!/^\d+$/.test(normalized) || !BASE_LENGTHS.has(normalized.length)) {
+    return null;
   }
 
   let sum = 0;
-  for (let index = digits.length - 1; index >= 0; index -= 1) {
-    const distanceFromRight = digits.length - index;
-    sum += digits[index] * (distanceFromRight % 2 === 1 ? 3 : 1);
+  for (let index = normalized.length - 1; index >= 0; index -= 1) {
+    const distanceFromRight = normalized.length - index;
+    sum += Number(normalized[index]) * (distanceFromRight % 2 === 1 ? 3 : 1);
   }
 
-  return (10 - (sum % 10)) % 10 === checkDigit;
+  return String((10 - (sum % 10)) % 10);
+}
+
+/**
+ * When a GTIN has the right length but a wrong check digit, returns the
+ * corrected GTIN; otherwise returns null.
+ */
+export function suggestGtinCorrection(value: string): string | null {
+  const normalized = value.trim().replace(/[\s-]/g, "");
+
+  if (!GTIN_LENGTHS.has(normalized.length) || !/^\d+$/.test(normalized)) {
+    return null;
+  }
+
+  const checkDigit = gtinCheckDigit(normalized.slice(0, -1));
+  if (checkDigit === null) {
+    return null;
+  }
+
+  const corrected = normalized.slice(0, -1) + checkDigit;
+  return corrected === normalized ? null : corrected;
 }
 
 export function normalizeGtinTo14(value: string): string {
