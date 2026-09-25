@@ -15,6 +15,8 @@ type InspectionRow = {
   file: File;
   scanResult: LabelScanResult;
   isRepaired?: boolean;
+  repairFailed?: boolean;
+  repairError?: string;
 };
 
 type BeforeInstallPromptEvent = Event & { prompt: () => Promise<void> };
@@ -134,6 +136,7 @@ export default function Home() {
       attention: rows.filter((r) => r.scanResult.status === "attention" && !r.isRepaired).length,
       ready: rows.filter((r) => r.scanResult.status === "ready" || r.isRepaired).length,
       error: rows.filter((r) => r.scanResult.status === "error" && !r.isRepaired).length,
+      failed: rows.filter((r) => r.repairFailed).length,
     };
   }, [rows]);
 
@@ -327,9 +330,12 @@ export default function Home() {
 
     const zip = new JSZip();
     const fixedIds = new Set<string>();
+    const failedIds = new Set<string>();
+    const failedErrors = new Map<string, string>();
     let okCount = 0;
     let fixedCount = 0;
     let skipped = 0;
+    let failedCount = 0;
 
     try {
       for (let index = 0; index < targets.length; index += 1) {
@@ -349,10 +355,19 @@ export default function Home() {
           continue;
         }
 
-        const blob = await repairRow(row);
-        zip.file(`[FIXED] ${row.filename}`, blob);
-        fixedIds.add(row.id);
-        fixedCount += 1;
+        try {
+          const blob = await repairRow(row);
+          zip.file(`[FIXED] ${row.filename}`, blob);
+          fixedIds.add(row.id);
+          fixedCount += 1;
+        } catch (error) {
+          // e.g. an invalid GTIN check digit cannot be fixed automatically;
+          // ship the untouched original and flag the row as failed.
+          failedIds.add(row.id);
+          failedErrors.set(row.id, error instanceof Error ? error.message : "Repair failed.");
+          zip.file(row.filename, row.file);
+          failedCount += 1;
+        }
       }
 
       setBatchProgress({ done: targets.length, total: targets.length, current: "" });
@@ -361,27 +376,34 @@ export default function Home() {
       downloadBlob(zipBlob, "Labels.zip");
 
       setRows((prev) =>
-        prev.map((r) =>
-          fixedIds.has(r.id)
-            ? {
-                ...r,
-                isRepaired: true,
-                scanResult: {
-                  ...r.scanResult,
-                  status: "ready",
-                  scannedGtin: r.scanResult.expectedGtin,
-                  scannedBarcodeNumber: r.scanResult.expectedBarcodeNumber,
-                  scannedRaw: r.scanResult.expectedBarcodeText,
-                  mismatches: [],
-                  detail: "Repaired: barcode replaced with the authoritative barcode number.",
-                },
-              }
-            : r,
-        ),
+        prev.map((r) => {
+          if (fixedIds.has(r.id)) {
+            return {
+              ...r,
+              isRepaired: true,
+              scanResult: {
+                ...r.scanResult,
+                status: "ready",
+                scannedGtin: r.scanResult.expectedGtin,
+                scannedBarcodeNumber: r.scanResult.expectedBarcodeNumber,
+                scannedRaw: r.scanResult.expectedBarcodeText,
+                mismatches: [],
+                detail: "Repaired: barcode replaced with the authoritative barcode number.",
+              },
+            };
+          }
+          if (failedIds.has(r.id)) {
+            return { ...r, repairFailed: true, repairError: failedErrors.get(r.id) };
+          }
+          return r;
+        }),
       );
 
       const summary = `Labels.zip downloaded: ${okCount} correct, ${fixedCount} fixed`;
-      setRepairMessage(skipped > 0 ? `${summary}, ${skipped} could not be repaired (no GTIN found).` : `${summary}.`);
+      const parts = [summary];
+      if (failedCount > 0) parts.push(`${failedCount} failed (wrong GTIN number - fix manually)`);
+      if (skipped > 0) parts.push(`${skipped} could not be repaired (no GTIN found)`);
+      setRepairMessage(parts.join(", ") + ".");
     } catch (error) {
       setToastMessage(error instanceof Error ? error.message : "Batch fix failed.");
     } finally {
@@ -678,7 +700,12 @@ export default function Home() {
             <Metric label="Verified &amp; ready" value={counts.ready} accent="mint" />
             <div className="metric metric-chart">
               <span className="metric-label">Batch health</span>
-              <StatusDonut ready={counts.ready} attention={counts.attention} error={counts.error} />
+              <StatusDonut
+                ready={counts.ready}
+                attention={counts.attention}
+                error={counts.error}
+                failed={counts.failed}
+              />
             </div>
           </section>
 
@@ -818,12 +845,21 @@ export default function Home() {
                                 </span>
                               )}
                             </span>
-                            <span
-                              className={`status-pill ${
-                                isReady ? "ready" : isAttention ? "attention" : "error"
-                              }`}
-                            >
-                              {isReady ? "Ready" : isAttention ? "Mismatch" : "Unreadable"}
+                            <span className="queue-row-status">
+                              <span
+                                className={`status-pill ${
+                                  isReady ? "ready" : isAttention ? "attention" : "error"
+                                }`}
+                              >
+                                {isReady ? "Ready" : isAttention ? "Mismatch" : "Unreadable"}
+                              </span>
+                              {row.repairFailed ? (
+                                <span className="fix-failed-note">
+                                  {/gtin|check digit/i.test(row.repairError ?? "")
+                                    ? "Wrong GTIN number can't be fixed automatically"
+                                    : row.repairError ?? "Repair failed"}
+                                </span>
+                              ) : null}
                             </span>
                           </button>
                         </div>
@@ -1003,25 +1039,33 @@ function StatusDonut({
   ready,
   attention,
   error,
+  failed,
 }: {
   ready: number;
   attention: number;
   error: number;
+  failed: number;
 }) {
-  const total = ready + attention + error;
-  const radius = 52;
+  const total = ready + attention + error + failed;
+  const radius = 60;
   const circumference = 2 * Math.PI * radius;
   const segments = [
     { label: "Verified", value: ready, color: "#4e8e70" },
     { label: "Needs fixing", value: attention, color: "#a26024" },
     { label: "Unreadable", value: error, color: "#b74932" },
+    { label: "Failed", value: failed, color: "#7f1d1d" },
   ];
   let offset = 0;
 
   return (
     <div className="donut-wrap">
-      <svg viewBox="0 0 140 140" className="donut" role="img" aria-label={`${ready} verified, ${attention} need fixing, ${error} unreadable`}>
-        <circle cx="70" cy="70" r={radius} fill="none" stroke="#e5e1d6" strokeWidth="15" />
+      <svg
+        viewBox="0 0 140 140"
+        className="donut"
+        role="img"
+        aria-label={`${ready} verified, ${attention} need fixing, ${error} unreadable, ${failed} failed`}
+      >
+        <circle cx="70" cy="70" r={radius} fill="none" stroke="#e5e1d6" strokeWidth="18" />
         {total > 0
           ? segments
               .filter((s) => s.value > 0)
@@ -1035,7 +1079,7 @@ function StatusDonut({
                     r={radius}
                     fill="none"
                     stroke={s.color}
-                    strokeWidth="15"
+                    strokeWidth="18"
                     strokeDasharray={`${length} ${circumference - length}`}
                     strokeDashoffset={-offset}
                     transform="rotate(-90 70 70)"
@@ -1045,21 +1089,7 @@ function StatusDonut({
                 return element;
               })
           : null}
-        <text x="70" y="68" textAnchor="middle" className="donut-total">
-          {total}
-        </text>
-        <text x="70" y="84" textAnchor="middle" className="donut-label">
-          labels
-        </text>
       </svg>
-      <ul className="donut-legend">
-        {segments.map((s) => (
-          <li key={s.label}>
-            <span className="legend-dot" style={{ background: s.color }} />
-            {s.label}: <strong>{s.value}</strong>
-          </li>
-        ))}
-      </ul>
     </div>
   );
 }
