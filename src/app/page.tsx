@@ -1220,7 +1220,10 @@ function InspectionDetail({
                 Every difference below will be corrected when you replace the barcode.
               </p>
               {scanResult.mismatches.map((m, idx) => (
-                <p key={idx} className="mismatch-detail-line">
+                <p
+                  key={idx}
+                  className={`mismatch-detail-line ${String(m.expected) === String(m.actual) ? "match" : "mismatch"}`}
+                >
                   &bull; <strong>{m.field}:</strong> expected <code>{m.expected}</code>, scanned <code>{m.actual}</code>
                 </p>
               ))}

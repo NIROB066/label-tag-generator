@@ -267,6 +267,7 @@ button { cursor: pointer; }
 .thumb-caption { display: block; margin-top: 4px; font: 9px Arial, sans-serif; color: var(--muted); }
 .mismatch-detail-line { margin: 4px 0 0; font: 11px/1.4 Arial, sans-serif; }
 .mismatch-detail-line code { background: #fae4dd; padding: 1px 4px; font-weight: 700; color: #9c2e17; overflow-wrap: anywhere; }
+.mismatch-detail-line.match code { background: #dcece1; color: #2f6b4f; }
 
 /* Resizable Barcode Box Workspace */
 .repair-box-workspace { padding: 22px 24px; border-top: 1px solid var(--line); background: #fdfbf7; }
