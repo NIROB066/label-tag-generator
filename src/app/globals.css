@@ -69,9 +69,15 @@ button { cursor: pointer; }
 .progress-wrap small { color: var(--muted); font: 10px Arial, sans-serif; }
 
 /* Donut chart */
-.metric-chart { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 8px; }
-.donut-wrap { display: flex; align-items: center; justify-content: center; }
-.donut { width: 122px; height: 122px; }
+.metric-chart { display: flex; align-items: center; justify-content: center; }
+.donut-wrap { display: flex; align-items: center; gap: 12px; }
+.donut { width: 104px; height: 104px; }
+.donut-total { font: 700 22px Arial, sans-serif; fill: var(--ink); }
+.donut-label { font: 9px Arial, sans-serif; fill: var(--muted); letter-spacing: .06em; text-transform: uppercase; }
+.donut-legend { display: grid; gap: 5px; margin: 0; padding: 0; list-style: none; font: 10px Arial, sans-serif; color: var(--muted); }
+.donut-legend li { display: flex; align-items: center; gap: 6px; }
+.legend-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; }
+.donut-legend strong { color: var(--ink); }
 
 /* Label pager (Previous / Next) */
 .label-pager { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 24px; border-bottom: 1px solid var(--line); background: #f8f5ed; }

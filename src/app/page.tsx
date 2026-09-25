@@ -372,6 +372,23 @@ export default function Home() {
 
       setBatchProgress({ done: targets.length, total: targets.length, current: "" });
 
+      // When any label could not be fixed automatically (e.g. a wrong GTIN
+      // check digit), nothing is downloaded: fix the flagged labels and run
+      // the batch again.
+      if (failedCount > 0) {
+        setRows((prev) =>
+          prev.map((r) =>
+            failedIds.has(r.id)
+              ? { ...r, repairFailed: true, repairError: failedErrors.get(r.id) }
+              : r,
+          ),
+        );
+        setRepairMessage(
+          `Nothing was downloaded: ${failedCount} label${failedCount === 1 ? "" : "s"} could not be fixed automatically (wrong GTIN number). Correct the GTIN on the flagged label${failedCount === 1 ? "" : "s"} and run Fix and Download ALL again.`,
+        );
+        return;
+      }
+
       const zipBlob = await zip.generateAsync({ type: "blob" });
       downloadBlob(zipBlob, "Labels.zip");
 
@@ -699,7 +716,6 @@ export default function Home() {
             <Metric label="Need fixing" value={counts.attention} accent="coral" />
             <Metric label="Verified &amp; ready" value={counts.ready} accent="mint" />
             <div className="metric metric-chart">
-              <span className="metric-label">Batch health</span>
               <StatusDonut
                 ready={counts.ready}
                 attention={counts.attention}
@@ -1089,7 +1105,21 @@ function StatusDonut({
                 return element;
               })
           : null}
+        <text x="70" y="68" textAnchor="middle" className="donut-total">
+          {total}
+        </text>
+        <text x="70" y="84" textAnchor="middle" className="donut-label">
+          labels
+        </text>
       </svg>
+      <ul className="donut-legend">
+        {segments.map((s) => (
+          <li key={s.label}>
+            <span className="legend-dot" style={{ background: s.color }} />
+            {s.label}: <strong>{s.value}</strong>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
