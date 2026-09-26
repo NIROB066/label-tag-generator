@@ -1,6 +1,6 @@
 "use client";
 
-import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import Link from "next/link";
 import JSZip from "jszip";
 import { buildGs1Payload, normalizeBestBeforeInput, suggestGtinCorrection, toBarcodeNumber } from "@/domain/gs1";
@@ -647,6 +647,7 @@ export default function Home() {
           </span>
         </button>
         <div className="topbar-actions">
+          <ThemeToggle />
           <Link className="guide-link" href="/guide">
             User guide
           </Link>
@@ -1141,6 +1142,76 @@ function InstallButton() {
         </div>
       ) : null}
     </div>
+  );
+}
+
+const systemThemeQuery = "(prefers-color-scheme: dark)";
+
+function subscribeToSystemTheme(onChange: () => void) {
+  const query = window.matchMedia(systemThemeQuery);
+  query.addEventListener("change", onChange);
+  return () => query.removeEventListener("change", onChange);
+}
+
+function getSystemThemeSnapshot() {
+  return window.matchMedia(systemThemeQuery).matches;
+}
+
+function ThemeToggle() {
+  // null = follow the system preference (default; nothing stored).
+  const [storedTheme, setStoredTheme] = useState<"light" | "dark" | null>(null);
+  const systemDark = useSyncExternalStore(
+    subscribeToSystemTheme,
+    getSystemThemeSnapshot,
+    () => false,
+  );
+
+  useEffect(() => {
+    // Read the stored choice after first paint (the pre-paint script in the
+    // layout has already applied it to <html>, so no visual flip happens).
+    const frame = requestAnimationFrame(() => {
+      try {
+        const stored = window.localStorage.getItem("theme");
+        if (stored === "light" || stored === "dark") setStoredTheme(stored);
+      } catch {
+        // localStorage can be unavailable (private mode) — stay on system mode.
+      }
+    });
+    return () => cancelAnimationFrame(frame);
+  }, []);
+
+  const isDark = storedTheme ? storedTheme === "dark" : systemDark;
+
+  function toggleTheme() {
+    const next = isDark ? "light" : "dark";
+    setStoredTheme(next);
+    document.documentElement.dataset.theme = next;
+    try {
+      window.localStorage.setItem("theme", next);
+    } catch {
+      // Preference just won't persist across visits.
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      className="theme-toggle"
+      onClick={toggleTheme}
+      title={isDark ? "Switch to light mode" : "Switch to dark mode"}
+      aria-label={isDark ? "Switch to light mode" : "Switch to dark mode"}
+    >
+      {isDark ? (
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+          <circle cx="12" cy="12" r="4.4" />
+          <path d="M12 2.5v2.4M12 19.1v2.4M2.5 12h2.4M19.1 12h2.4M5.3 5.3l1.7 1.7M17 17l1.7 1.7M18.7 5.3 17 7M7 17l-1.7 1.7" />
+        </svg>
+      ) : (
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+          <path d="M20.2 14.2A8.2 8.2 0 0 1 9.8 3.8 8.2 8.2 0 1 0 20.2 14.2Z" />
+        </svg>
+      )}
+    </button>
   );
 }
 

@@ -12,12 +12,21 @@ export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
   themeColor: "#17211f",
+  colorScheme: "light dark",
 };
+
+// Applies the persisted theme choice (if any) before first paint so the app
+// never flashes the wrong theme. Without a stored choice the CSS follows the
+// system preference (prefers-color-scheme) on its own.
+const themeInitScript = `(function(){try{var t=localStorage.getItem("theme");if(t==="light"||t==="dark"){document.documentElement.dataset.theme=t;}}catch(e){}})();`;
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
-      <body>{children}</body>
+    <html lang="en" suppressHydrationWarning>
+      <body>
+        <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
+        {children}
+      </body>
     </html>
   );
 }
