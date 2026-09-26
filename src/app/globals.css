@@ -32,17 +32,17 @@ button { cursor: pointer; }
 .install-help p { margin: 0 0 8px; color: var(--muted); font: 11px/1.5 Arial, sans-serif; }
 @media (display-mode: standalone) { .install-wrap { display: none; } }
 
-/* Version badge (top-right corner) with a slow, decorative glow */
+/* Version badge (top-right corner): white text, slowly glowing green dot */
 .version-wrap { position: relative; }
-.version-badge { display: inline-flex; align-items: center; gap: 7px; padding: 8px 12px; border: 1px solid #a8823f; background: #1c2b27; color: #ffd98a; font: 700 11px Arial, sans-serif; letter-spacing: .05em; cursor: pointer; animation: version-glow 3.4s ease-in-out infinite; }
-.version-badge:hover { border-color: var(--yellow); color: #ffe9b3; }
-.version-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--yellow); box-shadow: 0 0 6px 1px #f3c969cc; }
+.version-badge { display: inline-flex; align-items: center; gap: 7px; padding: 8px 12px; border: 1px solid #3d4b46; background: #1c2b27; color: #fffdf8; font: 700 11px Arial, sans-serif; letter-spacing: .05em; cursor: pointer; }
+.version-badge:hover { border-color: #52a477; }
+.version-dot { width: 7px; height: 7px; border-radius: 50%; background: #52a477; animation: version-glow 3.4s ease-in-out infinite; }
 @keyframes version-glow {
-  0%, 100% { box-shadow: 0 0 3px 0 #f3c9692e; text-shadow: 0 0 2px #f3c96959; }
-  50% { box-shadow: 0 0 15px 2px #f3c9698c, 0 0 4px 1px #f3c96959; text-shadow: 0 0 9px #f3c969d6; }
+  0%, 100% { box-shadow: 0 0 3px 0 #52a47773; }
+  50% { box-shadow: 0 0 12px 3px #52a477d9; }
 }
-@media (prefers-reduced-motion: reduce) { .version-badge { animation: none; } }
-.version-popover { position: absolute; top: calc(100% + 8px); right: 0; z-index: 50; width: min(320px, calc(100vw - 40px)); padding: 14px 15px; border: 1px solid #a8823f; border-top: 3px solid var(--yellow); background: var(--panel); box-shadow: 0 12px 30px #17211f33; }
+@media (prefers-reduced-motion: reduce) { .version-dot { animation: none; box-shadow: 0 0 6px 1px #52a477b3; } }
+.version-popover { position: absolute; top: calc(100% + 8px); right: 0; z-index: 50; width: min(320px, calc(100vw - 40px)); padding: 14px 15px; border: 1px solid #52a477; border-top: 3px solid #52a477; background: var(--panel); box-shadow: 0 12px 30px #17211f33; }
 .version-popover strong { display: block; margin-bottom: 7px; font: 700 12px Arial, sans-serif; color: var(--ink); }
 .version-notes { margin: 0 0 10px; color: var(--muted); font: 11px/1.55 Arial, sans-serif; white-space: pre-line; overflow-wrap: anywhere; }
 
