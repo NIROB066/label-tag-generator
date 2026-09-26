@@ -16,12 +16,11 @@ export type AppInfo = {
 };
 
 export const DEFAULT_APP_INFO: AppInfo = {
-  version: "1.1.0",
+  version: "1.2.0",
   releaseUpdate: [
-    "Version 1.1.0",
+    "Version 1.2.0",
     "- Drag & drop: drop .docx labels or .zip archives anywhere in Check & fix to scan them.",
-    "- Glowing version badge in the top-right corner; click it to read the release update.",
-    "- App data (version, release notes, logo, address) now lives in data.xlsx.",
+    "- Dark mode: follows your system theme by default; switch anytime with the sun/moon button in the top bar.",
   ].join("\n"),
   address: "Gastronomique pastry INC, 7621 vantage way, Delta, BC V4G 1A6",
 };
