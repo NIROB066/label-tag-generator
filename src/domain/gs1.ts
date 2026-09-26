@@ -87,6 +87,36 @@ export function normalizeGtinTo14(value: string): string {
   return normalized.padStart(14, "0");
 }
 
+/**
+ * Lenient UI-side normalizer for hand-typed best-before dates: trims the
+ * text, accepts `-`, `/`, `.`, or space separators, and zero-pads single-digit
+ * month/day values. Returns a `YYYY-MM-DD` string, or null when the text is
+ * not a plausible date (calendar validity is checked later by the payload
+ * builder).
+ */
+export function normalizeBestBeforeInput(value: string): string | null {
+  const parts = value.trim().split(/[-/. ]+/);
+
+  if (parts.length !== 3) {
+    return null;
+  }
+
+  const [year, month, day] = parts;
+
+  if (!/^\d{4}$/.test(year) || !/^\d{1,2}$/.test(month) || !/^\d{1,2}$/.test(day)) {
+    return null;
+  }
+
+  const monthNumber = Number(month);
+  const dayNumber = Number(day);
+
+  if (monthNumber < 1 || monthNumber > 12 || dayNumber < 1 || dayNumber > 31) {
+    return null;
+  }
+
+  return `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`;
+}
+
 function normalizeBestBefore(value: string): string {
   const date = new Date(`${value}T00:00:00Z`);
 

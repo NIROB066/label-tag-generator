@@ -3,6 +3,7 @@ import {
   buildGs1Payload,
   gtinCheckDigit,
   isValidGtin,
+  normalizeBestBeforeInput,
   normalizeGtinTo14,
   parseGs1Payload,
   suggestGtinCorrection,
@@ -94,6 +95,31 @@ describe("GS1 payloads", () => {
     expect(() => parseGs1Payload(payloadWithParentheses())).toThrow(
       "must not contain parentheses",
     );
+  });
+});
+
+describe("normalizeBestBeforeInput", () => {
+  it("accepts an already-normalized date unchanged", () => {
+    expect(normalizeBestBeforeInput("2025-09-23")).toBe("2025-09-23");
+  });
+
+  it("zero-pads single-digit month and day", () => {
+    expect(normalizeBestBeforeInput("2025-9-3")).toBe("2025-09-03");
+  });
+
+  it("accepts slash, dot, and space separators from mobile keyboards", () => {
+    expect(normalizeBestBeforeInput("2025/09/23")).toBe("2025-09-23");
+    expect(normalizeBestBeforeInput("2025.9.23")).toBe("2025-09-23");
+    expect(normalizeBestBeforeInput(" 2025 09 23 ")).toBe("2025-09-23");
+  });
+
+  it("returns null for implausible dates", () => {
+    expect(normalizeBestBeforeInput("2025-13-01")).toBeNull();
+    expect(normalizeBestBeforeInput("2025-00-10")).toBeNull();
+    expect(normalizeBestBeforeInput("2025-09-32")).toBeNull();
+    expect(normalizeBestBeforeInput("2025-09")).toBeNull();
+    expect(normalizeBestBeforeInput("25-09-23")).toBeNull();
+    expect(normalizeBestBeforeInput("")).toBeNull();
   });
 });
 

@@ -3,7 +3,7 @@
 import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import JSZip from "jszip";
-import { buildGs1Payload, suggestGtinCorrection, toBarcodeNumber } from "@/domain/gs1";
+import { buildGs1Payload, normalizeBestBeforeInput, suggestGtinCorrection, toBarcodeNumber } from "@/domain/gs1";
 import { pickTitleFontSize } from "@/domain/label-typography";
 import { LabelScanResult } from "@/domain/label-schema";
 
@@ -1443,22 +1443,7 @@ function DateField({
   placeholder?: string;
   hint?: string;
 }) {
-  const dateInputRef = useRef<HTMLInputElement>(null);
-
-  function openPicker() {
-    const input = dateInputRef.current;
-    if (!input) return;
-
-    if (typeof input.showPicker === "function") {
-      try {
-        input.showPicker();
-        return;
-      } catch {
-        // Fall through to focus fallback.
-      }
-    }
-    input.focus();
-  }
+  const dateValue = /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : "";
 
   function handlePicked(event: ChangeEvent<HTMLInputElement>) {
     if (event.target.value) {
@@ -1466,37 +1451,50 @@ function DateField({
     }
   }
 
+  function normalizeTyped() {
+    const normalized = normalizeBestBeforeInput(value);
+    if (normalized && normalized !== value) {
+      onChange(normalized);
+    }
+  }
+
   return (
     <label className="field">
       <span>{label}</span>
+      {/* Touch devices (iPhone/iPad/Android) get the native OS date picker
+          directly on the main field: tapping it always opens the picker,
+          independent of showPicker() support or popup blockers. */}
+      <input
+        type="date"
+        className="date-native-field"
+        value={dateValue}
+        onChange={handlePicked}
+        aria-label={`${label} date`}
+      />
       <span className="date-input-row">
         <input
           type="text"
           value={value}
           placeholder={placeholder}
           onChange={(event) => onChange(event.target.value)}
+          onBlur={normalizeTyped}
         />
-        <button
-          type="button"
-          className="calendar-button"
-          onClick={openPicker}
-          aria-label="Pick best-before date from calendar"
-          title="Pick from calendar"
-        >
+        <span className="calendar-button">
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
             <rect x="1.5" y="3" width="13" height="11.5" rx="1" />
             <path d="M1.5 6.5h13M5 1.5v3M11 1.5v3" />
           </svg>
-        </button>
-        <input
-          ref={dateInputRef}
-          type="date"
-          className="hidden-date-input"
-          value={/^\d{4}-\d{2}-\d{2}$/.test(value) ? value : ""}
-          onChange={handlePicked}
-          tabIndex={-1}
-          aria-hidden="true"
-        />
+          {/* The native input overlays the icon, so the tap/click target IS
+              the date input itself and every browser opens its own picker. */}
+          <input
+            type="date"
+            className="calendar-native-input"
+            value={dateValue}
+            onChange={handlePicked}
+            aria-label={`Pick ${label.toLowerCase()} date from calendar`}
+            title="Pick from calendar"
+          />
+        </span>
       </span>
       {hint ? <small className="field-hint">{hint}</small> : null}
     </label>
