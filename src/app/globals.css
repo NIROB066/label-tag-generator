@@ -32,6 +32,28 @@ button { cursor: pointer; }
 .install-help p { margin: 0 0 8px; color: var(--muted); font: 11px/1.5 Arial, sans-serif; }
 @media (display-mode: standalone) { .install-wrap { display: none; } }
 
+/* Version badge (top-right corner) with a slow, decorative glow */
+.version-wrap { position: relative; }
+.version-badge { display: inline-flex; align-items: center; gap: 7px; padding: 8px 12px; border: 1px solid #a8823f; background: #1c2b27; color: #ffd98a; font: 700 11px Arial, sans-serif; letter-spacing: .05em; cursor: pointer; animation: version-glow 3.4s ease-in-out infinite; }
+.version-badge:hover { border-color: var(--yellow); color: #ffe9b3; }
+.version-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--yellow); box-shadow: 0 0 6px 1px #f3c969cc; }
+@keyframes version-glow {
+  0%, 100% { box-shadow: 0 0 3px 0 #f3c9692e; text-shadow: 0 0 2px #f3c96959; }
+  50% { box-shadow: 0 0 15px 2px #f3c9698c, 0 0 4px 1px #f3c96959; text-shadow: 0 0 9px #f3c969d6; }
+}
+@media (prefers-reduced-motion: reduce) { .version-badge { animation: none; } }
+.version-popover { position: absolute; top: calc(100% + 8px); right: 0; z-index: 50; width: min(320px, calc(100vw - 40px)); padding: 14px 15px; border: 1px solid #a8823f; border-top: 3px solid var(--yellow); background: var(--panel); box-shadow: 0 12px 30px #17211f33; }
+.version-popover strong { display: block; margin-bottom: 7px; font: 700 12px Arial, sans-serif; color: var(--ink); }
+.version-notes { margin: 0 0 10px; color: var(--muted); font: 11px/1.55 Arial, sans-serif; white-space: pre-line; overflow-wrap: anywhere; }
+
+/* Drag & drop upload zone (Inspect mode) */
+.inspect-drop-zone { position: relative; }
+.drop-overlay { position: absolute; inset: 0; z-index: 25; display: grid; place-items: center; padding: 20px; background: #f7f4ecee; pointer-events: none; }
+.drop-overlay::before { content: ""; position: absolute; inset: 10px; border: 2px dashed var(--coral); background: #fffdf880; }
+.drop-overlay-card { position: relative; display: grid; gap: 7px; justify-items: center; padding: 22px 32px; border: 1px solid var(--line); background: var(--panel); box-shadow: 0 14px 34px #17211f26; text-align: center; }
+.drop-overlay-card strong { font-size: 19px; font-weight: 400; letter-spacing: -.02em; }
+.drop-overlay-card span { color: var(--muted); font: 12px Arial, sans-serif; }
+
 /* Home choice screen */
 .home-choice { display: grid; place-items: center; min-height: 58vh; max-width: 1440px; margin-inline: auto; padding: 40px 0; }
 .home-choice-inner { display: grid; justify-items: center; gap: 26px; text-align: center; }
@@ -110,7 +132,7 @@ button { cursor: pointer; }
 @media print {
   body { background: #fff; }
   .guide-shell { max-width: none; padding: 0; }
-  .guide-actions, .mobile-nav, .install-wrap, .toast { display: none !important; }
+  .guide-actions, .mobile-nav, .install-wrap, .toast, .version-wrap, .drop-overlay { display: none !important; }
   .guide-section { break-inside: avoid; border-bottom: 1px solid #ddd; }
   .guide-figure svg { max-width: 640px; }
 }

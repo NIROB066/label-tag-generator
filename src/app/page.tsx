@@ -21,6 +21,14 @@ type InspectionRow = {
 
 type BeforeInstallPromptEvent = Event & { prompt: () => Promise<void> };
 
+// App metadata served from data.xlsx via /api/app-info.
+type AppInfoClient = {
+  version: string;
+  releaseUpdate: string;
+  address: string;
+  logoUrl: string;
+};
+
 const DOCX_MIME =
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 
@@ -54,6 +62,13 @@ export default function Home() {
   const [repairMessage, setRepairMessage] = useState("");
   const [toastMessage, setToastMessage] = useState("");
 
+  // App metadata from data.xlsx (version badge, release notes, address, logo)
+  const [appInfo, setAppInfo] = useState<AppInfoClient | null>(null);
+
+  // Drag & drop upload (Inspect mode)
+  const [isDropActive, setIsDropActive] = useState(false);
+  const dragDepthRef = useRef(0);
+
   // Batch download-all state (progress bar)
   const [isDownloadingAll, setIsDownloadingAll] = useState(false);
   const [batchProgress, setBatchProgress] = useState({ done: 0, total: 0, current: "" });
@@ -84,6 +99,18 @@ export default function Home() {
     if ("serviceWorker" in navigator) {
       navigator.serviceWorker.register("/sw.js").catch(() => {});
     }
+  }, []);
+
+  // Load app metadata (version, release update, address, logo) from data.xlsx.
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch("/api/app-info", { signal: controller.signal })
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data: AppInfoClient | null) => {
+        if (data) setAppInfo(data);
+      })
+      .catch(() => {});
+    return () => controller.abort();
   }, []);
 
   // Load barcode preview for Create mode
@@ -157,10 +184,10 @@ export default function Home() {
 
   const mismatchedRows = rows.filter((r) => r.scanResult.status !== "ready" && !r.isRepaired);
 
-  // Handle Multi-file Upload (DOCX files or ZIP archives of DOCX files)
-  async function handleUpload(event: ChangeEvent<HTMLInputElement>) {
-    const files = Array.from(event.target.files ?? []);
-    if (!files.length) return;
+  // Handle Multi-file Upload (DOCX files or ZIP archives of DOCX files),
+  // shared by the file input and the drag & drop zone.
+  async function ingestFiles(files: File[]) {
+    if (!files.length || isScanning || isDownloadingAll) return;
 
     setIsScanning(true);
     setRepairMessage("");
@@ -237,8 +264,52 @@ export default function Home() {
       setToastMessage(msg);
     } finally {
       setIsScanning(false);
-      event.target.value = "";
     }
+  }
+
+  function handleUpload(event: ChangeEvent<HTMLInputElement>) {
+    void ingestFiles(Array.from(event.target.files ?? []));
+    event.target.value = "";
+  }
+
+  // Drag & Drop upload (Inspect mode): accept .docx files and .zip archives
+  // dropped anywhere over the inspection workspace.
+  function dragHasFiles(event: React.DragEvent) {
+    return Array.from(event.dataTransfer?.types ?? []).includes("Files");
+  }
+
+  function handleDragEnter(event: React.DragEvent) {
+    if (!dragHasFiles(event)) return;
+    event.preventDefault();
+    dragDepthRef.current += 1;
+    setIsDropActive(true);
+  }
+
+  function handleDragOver(event: React.DragEvent) {
+    if (!dragHasFiles(event)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+  }
+
+  function handleDragLeave(event: React.DragEvent) {
+    if (!dragHasFiles(event)) return;
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+    if (dragDepthRef.current === 0) setIsDropActive(false);
+  }
+
+  function handleDrop(event: React.DragEvent) {
+    if (!dragHasFiles(event)) return;
+    event.preventDefault();
+    dragDepthRef.current = 0;
+    setIsDropActive(false);
+    const files = Array.from(event.dataTransfer.files).filter((file) =>
+      /\.(docx|zip)$/i.test(file.name),
+    );
+    if (!files.length) {
+      setToastMessage("Only .docx and .zip files can be inspected.");
+      return;
+    }
+    void ingestFiles(files);
   }
 
   function handleClearAll() {
@@ -580,6 +651,9 @@ export default function Home() {
             User guide
           </Link>
           <InstallButton />
+          {appInfo ? (
+            <VersionBadge version={appInfo.version} releaseUpdate={appInfo.releaseUpdate} />
+          ) : null}
           <span className="topbar-note">
             <span className="status-dot" /> Local barcode verification engine
           </span>
@@ -703,6 +777,8 @@ export default function Home() {
                 storageInstruction={form.storageInstruction}
                 gtin={form.gtin}
                 barcodePreviewUrl={barcodePreviewUrl}
+                address={appInfo?.address}
+                logoUrl={appInfo?.logoUrl}
               />
             </div>
           </div>
@@ -710,7 +786,13 @@ export default function Home() {
       ) : null}
 
       {mode === "inspect" ? (
-        <>
+        <div
+          className="inspect-drop-zone"
+          onDragEnter={handleDragEnter}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+        >
           <section className="metrics" aria-label="Batch summary">
             <Metric label="Labels in queue" value={counts.total} accent="ink" />
             <Metric label="Need fixing" value={counts.attention} accent="coral" />
@@ -885,8 +967,9 @@ export default function Home() {
                     <div className="queue-empty">
                       <strong>No labels uploaded</strong>
                       <span>
-                        Upload one or more .docx label files, or a .zip containing several labels,
-                        to scan and check barcodes.
+                        Drag &amp; drop one or more .docx label files (or a .zip containing
+                        several) anywhere in this workspace, or use Upload labels, to scan and
+                        check barcodes.
                       </span>
                     </div>
                   )}
@@ -931,15 +1014,25 @@ export default function Home() {
                     <p className="eyebrow">Step 1</p>
                     <h3>Upload label files</h3>
                     <p className="empty-detail-copy">
-                      Select and upload .docx labels (or a .zip with several) to scan the embedded
-                      barcodes and compare them with the expected barcode numbers.
+                      Drag &amp; drop .docx labels (or a .zip with several) anywhere in this
+                      workspace — or use the Upload labels button — to scan the embedded barcodes
+                      and compare them with the expected barcode numbers.
                     </p>
                   </div>
                 )}
               </div>
             </div>
           </section>
-        </>
+
+          {isDropActive ? (
+            <div className="drop-overlay" aria-hidden="true">
+              <div className="drop-overlay-card">
+                <strong>Drop your labels here</strong>
+                <span>.docx files and .zip archives are scanned automatically</span>
+              </div>
+            </div>
+          ) : null}
+        </div>
       ) : null}
 
       <footer className="footer-note">
@@ -1043,6 +1136,60 @@ function InstallButton() {
             </p>
           )}
           <button type="button" className="text-link-btn" onClick={() => setShowHelp(false)}>
+            Close
+          </button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function VersionBadge({ version, releaseUpdate }: { version: string; releaseUpdate: string }) {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+
+    function onPointerDown(event: MouseEvent) {
+      if (wrapRef.current && !wrapRef.current.contains(event.target as Node)) {
+        setOpen(false);
+      }
+    }
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setOpen(false);
+    }
+
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
+
+  return (
+    <div className="version-wrap" ref={wrapRef}>
+      <button
+        type="button"
+        className="version-badge"
+        aria-expanded={open}
+        aria-haspopup="dialog"
+        title="What's new in this release"
+        onClick={() => setOpen((visible) => !visible)}
+      >
+        <span className="version-dot" aria-hidden="true" />
+        v{version}
+      </button>
+      {open ? (
+        <div
+          className="version-popover"
+          role="dialog"
+          aria-label={`Release update for version ${version}`}
+        >
+          <strong>Release update &mdash; v{version}</strong>
+          <p className="version-notes">{releaseUpdate}</p>
+          <button type="button" className="text-link-btn" onClick={() => setOpen(false)}>
             Close
           </button>
         </div>
@@ -1510,6 +1657,8 @@ function PdfLabelPreview({
   storageInstruction,
   gtin,
   barcodePreviewUrl,
+  address,
+  logoUrl,
 }: {
   productName: string;
   itemNumber: string;
@@ -1519,10 +1668,20 @@ function PdfLabelPreview({
   storageInstruction: string;
   gtin: string;
   barcodePreviewUrl: string | null;
+  address?: string;
+  logoUrl?: string;
 }) {
+  // Address comes from data.xlsx; the first comma splits the bold company
+  // name from the street lines, matching the printed label layout.
+  const addressText =
+    address || "Gastronomique pastry INC, 7621 vantage way, Delta, BC V4G 1A6";
+  const commaIndex = addressText.indexOf(",");
+  const company = commaIndex === -1 ? addressText : addressText.slice(0, commaIndex).trim();
+  const addressLine = commaIndex === -1 ? "" : addressText.slice(commaIndex + 1).trim();
+
   return (
     <div className="pdf-page">
-      <img className="preview-logo" src="/api/labels/logo" alt="Template logo" />
+      <img className="preview-logo" src={logoUrl || "/api/labels/logo"} alt="Template logo" />
       <div
         className="preview-title"
         style={{ fontSize: `${(pickTitleFontSize(productName) / 2) * 1.25}px` }}
@@ -1555,8 +1714,8 @@ function PdfLabelPreview({
         )}
       </div>
       <div className="preview-address">
-        <strong>Gastronomique pastry INC</strong>
-        <span>7621 vantage way, Delta, BC V4G 1A6</span>
+        <strong>{company}</strong>
+        {addressLine ? <span>{addressLine}</span> : null}
       </div>
     </div>
   );
