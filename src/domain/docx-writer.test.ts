@@ -65,12 +65,15 @@ describe("DOCX label generation", () => {
     const ingredientsValueStart = ingredientsBox.indexOf("Eggs, sugar");
     const labelToValue = ingredientsBox.slice(ingredientsBox.indexOf("</w:t>", ingredientsBox.indexOf("Ingredients:")) + 6, ingredientsValueStart);
     expect(labelToValue).not.toContain("<w:b");
+    // The value starts immediately after the bold label — no separator space
+    // run survives between "Ingredients:" and the declaration.
+    expect(labelToValue).not.toMatch(/<w:t[^>]*>[ \t]+<\/w:t>/);
 
     const barcodeBox = namedAnchor(generatedXml ?? "", "Picture 7");
-    expect(barcodeBox).toContain('<wp:extent cx="3108960" cy="740664"/>');
-    expect(barcodeBox).toContain('<a:ext cx="3108960" cy="740664"/>');
+    expect(barcodeBox).toContain('<wp:extent cx="3108960" cy="740410"/>');
+    expect(barcodeBox).toContain('<a:ext cx="3108960" cy="740410"/>');
     expect(namedAnchor(generatedXml ?? "", "Text Box 7")).toContain(
-      "<wp:posOffset>912114</wp:posOffset>",
+      "<wp:posOffset>1136416</wp:posOffset>",
     );
   });
 
@@ -88,7 +91,7 @@ describe("DOCX label generation", () => {
     const ingredientsBox = namedAnchor(xml ?? "", "Text Box 5");
     const productBox = namedAnchor(xml ?? "", "Text Box 2");
 
-    expect(ingredientsBox).toContain('<wp:extent cx="3211195" cy="1508760"/>');
+    expect(ingredientsBox).toContain('<wp:extent cx="3211195" cy="2013284"/>');
     expect(ingredientsBox).toContain(`<w:sz w:val="${pickIngredientFontSize(longInput.ingredients)}"/>`);
     expect(ingredientsBox).toContain('<w:sz w:val="18"/>');
     // The title auto-shrinks to the largest size that fits two wrapped lines.
@@ -130,7 +133,7 @@ describe("DOCX label generation", () => {
     const expectedSize = pickIngredientFontSize(hugeIngredientsInput.ingredients);
     expect(expectedSize).toBeLessThan(18);
     expect(ingredientsBox).toContain(`<w:sz w:val="${expectedSize}"/>`);
-    expect(ingredientsBox).toContain('<wp:extent cx="3211195" cy="1508760"/>');
+    expect(ingredientsBox).toContain('<wp:extent cx="3211195" cy="2013284"/>');
   });
 });
 

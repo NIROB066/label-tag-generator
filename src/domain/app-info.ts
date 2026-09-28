@@ -16,11 +16,11 @@ export type AppInfo = {
 };
 
 export const DEFAULT_APP_INFO: AppInfo = {
-  version: "1.2.0",
+  version: "1.2.1",
   releaseUpdate: [
-    "Version 1.2.0",
-    "- Drag & drop: drop .docx labels or .zip archives anywhere in Check & fix to scan them.",
-    "- Dark mode: follows your system theme by default; switch anytime with the sun/moon button in the top bar.",
+    "Version 1.2.1",
+    '- Label layout: more room for ingredients; the list starts right after "Ingredients:".',
+    "- Create preview: full-size PDF preview that matches the printed label.",
   ].join("\n"),
   address: "Gastronomique pastry INC, 7621 vantage way, Delta, BC V4G 1A6",
 };

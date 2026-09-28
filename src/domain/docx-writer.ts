@@ -162,8 +162,14 @@ function updateIngredientsRuns(content: string, ingredients: string): string {
       valueRun = true;
       return tag;
     }
-    if (!valueRun || value === " ") {
+    if (!valueRun) {
       return tag;
+    }
+    if (value === " ") {
+      // Blank the separator space so the value starts immediately after the
+      // bold "Ingredients:" label — a leading space would let Word wrap long
+      // first words onto the next line instead of filling the first line.
+      return replaceTextTag(tag, "");
     }
     if (!valueWritten) {
       valueWritten = true;

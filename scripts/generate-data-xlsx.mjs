@@ -10,11 +10,11 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import ExcelJS from "exceljs";
 
-const VERSION = "1.2.0";
+const VERSION = "1.2.1";
 const RELEASE_UPDATE = [
   `Version ${VERSION}`,
-  "- Drag & drop: drop .docx labels or .zip archives anywhere in Check & fix to scan them.",
-  "- Dark mode: follows your system theme by default; switch anytime with the sun/moon button in the top bar.",
+  "- Label layout: more room for ingredients; the list starts right after \"Ingredients:\".",
+  "- Create preview: full-size PDF preview that matches the printed label.",
 ].join("\n");
 const ADDRESS = "Gastronomique pastry INC, 7621 vantage way, Delta, BC V4G 1A6";
 

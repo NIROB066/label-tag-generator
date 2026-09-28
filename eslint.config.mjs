@@ -14,6 +14,8 @@ const eslintConfig = defineConfig([
     "next-env.d.ts",
     // Agent Manager worktree checkouts are separate sessions, not this tree.
     ".kilo/**",
+    // Static assets served as-is (includes the pdf.js worker bundle).
+    "public/**",
   ]),
 ]);
 

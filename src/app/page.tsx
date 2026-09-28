@@ -1,10 +1,10 @@
 "use client";
 
 import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import type { PDFDocumentLoadingTask, PDFDocumentProxy } from "pdfjs-dist";
 import Link from "next/link";
 import JSZip from "jszip";
 import { buildGs1Payload, normalizeBestBeforeInput, suggestGtinCorrection, toBarcodeNumber } from "@/domain/gs1";
-import { pickTitleFontSize } from "@/domain/label-typography";
 import { LabelScanResult } from "@/domain/label-schema";
 
 type Mode = "home" | "create" | "inspect";
@@ -92,7 +92,6 @@ export default function Home() {
   const [formSuccess, setFormSuccess] = useState<string | null>(null);
   const [gtinSuggestion, setGtinSuggestion] = useState<string | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
-  const [barcodePreviewUrl, setBarcodePreviewUrl] = useState<string | null>(null);
 
   // Register the service worker so the app is installable as a PWA.
   useEffect(() => {
@@ -112,47 +111,6 @@ export default function Home() {
       .catch(() => {});
     return () => controller.abort();
   }, []);
-
-  // Load barcode preview for Create mode
-  useEffect(() => {
-    const controller = new AbortController();
-    let objectUrl: string | null = null;
-
-    async function loadBarcodePreview() {
-      // Skip the request until the barcode payload fields have values.
-      if (!form.gtin.trim() || !form.bestBefore || !form.lotCode.trim()) {
-        setBarcodePreviewUrl(null);
-        return;
-      }
-
-      try {
-        const response = await fetch("/api/labels/barcode", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            gtin: form.gtin,
-            bestBefore: form.bestBefore,
-            lotCode: form.lotCode,
-          }),
-          signal: controller.signal,
-        });
-        if (!response.ok) {
-          setBarcodePreviewUrl(null);
-          return;
-        }
-        objectUrl = URL.createObjectURL(await response.blob());
-        setBarcodePreviewUrl(objectUrl);
-      } catch {
-        if (!controller.signal.aborted) setBarcodePreviewUrl(null);
-      }
-    }
-
-    void loadBarcodePreview();
-    return () => {
-      controller.abort();
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
-    };
-  }, [form.bestBefore, form.gtin, form.lotCode]);
 
   const selectedRow = rows.find((row) => row.id === selectedId) ?? rows[0];
 
@@ -769,7 +727,7 @@ export default function Home() {
               </div>
             </form>
             <div className="preview-wrap">
-              <PdfLabelPreview
+              <LabelPdfPreview
                 productName={form.productName}
                 itemNumber={form.itemNumber}
                 lotCode={form.lotCode}
@@ -777,9 +735,7 @@ export default function Home() {
                 ingredients={form.ingredients}
                 storageInstruction={form.storageInstruction}
                 gtin={form.gtin}
-                barcodePreviewUrl={barcodePreviewUrl}
                 address={appInfo?.address}
-                logoUrl={appInfo?.logoUrl}
               />
             </div>
           </div>
@@ -1719,7 +1675,7 @@ function DateField({
   );
 }
 
-function PdfLabelPreview({
+function LabelPdfPreview({
   productName,
   itemNumber,
   lotCode,
@@ -1727,9 +1683,7 @@ function PdfLabelPreview({
   ingredients,
   storageInstruction,
   gtin,
-  barcodePreviewUrl,
   address,
-  logoUrl,
 }: {
   productName: string;
   itemNumber: string;
@@ -1738,56 +1692,172 @@ function PdfLabelPreview({
   ingredients: string;
   storageInstruction: string;
   gtin: string;
-  barcodePreviewUrl: string | null;
   address?: string;
-  logoUrl?: string;
 }) {
-  // Address comes from data.xlsx; the first comma splits the bold company
-  // name from the street lines, matching the printed label layout.
-  const addressText =
-    address || "Gastronomique pastry INC, 7621 vantage way, Delta, BC V4G 1A6";
-  const commaIndex = addressText.indexOf(",");
-  const company = commaIndex === -1 ? addressText : addressText.slice(0, commaIndex).trim();
-  const addressLine = commaIndex === -1 ? "" : addressText.slice(commaIndex + 1).trim();
+  const [pdfBytes, setPdfBytes] = useState<Uint8Array | null>(null);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const [docVersion, setDocVersion] = useState(0);
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const docRef = useRef<PDFDocumentProxy | null>(null);
+  const taskRef = useRef<PDFDocumentLoadingTask | null>(null);
+
+  // The preview is a server-rendered 4"x6" PDF built from the same data,
+  // barcode generator, and auto-fit rules as the generated DOCX, so it
+  // always matches the downloaded document. Debounced while typing.
+  useEffect(() => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      fetch("/api/labels/preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          productName,
+          itemNumber,
+          gtin,
+          lotCode,
+          bestBefore,
+          ingredients,
+          storageInstruction,
+          address,
+        }),
+        signal: controller.signal,
+      })
+        .then(async (response) => {
+          if (!response.ok) {
+            throw new Error("Preview could not be rendered.");
+          }
+          return new Uint8Array(await response.arrayBuffer());
+        })
+        .then((bytes) => {
+          setPdfBytes(bytes);
+          setPreviewError(null);
+        })
+        .catch((error: unknown) => {
+          if (!controller.signal.aborted) {
+            setPreviewError(error instanceof Error ? error.message : "Preview failed.");
+          }
+        });
+    }, 350);
+
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [
+    productName,
+    itemNumber,
+    lotCode,
+    bestBefore,
+    ingredients,
+    storageInstruction,
+    gtin,
+    address,
+  ]);
+
+  // Load the fetched PDF with pdf.js. The worker and standard fonts are
+  // served from /public so the page renders entirely in the browser with
+  // no viewer chrome — nothing to download or click from here.
+  useEffect(() => {
+    if (!pdfBytes) return;
+    let cancelled = false;
+
+    void (async () => {
+      try {
+        const pdfjs = await import("pdfjs-dist");
+        pdfjs.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
+        const loadingTask = pdfjs.getDocument({
+          data: pdfBytes.slice(),
+          standardFontDataUrl: "/standard_fonts/",
+        });
+        const doc = await loadingTask.promise;
+        if (cancelled) {
+          void loadingTask.destroy();
+          return;
+        }
+        // Release the previous document before swapping in the new one.
+        await taskRef.current?.destroy();
+        taskRef.current = loadingTask;
+        docRef.current = doc;
+        setDocVersion((version) => version + 1);
+      } catch (error) {
+        if (!cancelled) {
+          setPreviewError(error instanceof Error ? error.message : "Preview failed.");
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [pdfBytes]);
+
+  useEffect(() => {
+    return () => {
+      void taskRef.current?.destroy();
+      taskRef.current = null;
+      docRef.current = null;
+    };
+  }, []);
+
+  // Paint the PDF page onto the canvas at exactly the panel width (and the
+  // device pixel ratio, so it stays crisp); repaint when the panel resizes.
+  useEffect(() => {
+    const wrapper = wrapperRef.current;
+    const canvas = canvasRef.current;
+    if (!wrapper || !canvas || !docRef.current) return;
+
+    let task: { cancel(): void; promise: Promise<void> } | undefined;
+    let resizeTimer: ReturnType<typeof setTimeout> | undefined;
+
+    const draw = async () => {
+      const doc = docRef.current;
+      if (!doc) return;
+      try {
+        const page = await doc.getPage(1);
+        const base = page.getViewport({ scale: 1 });
+        const width = wrapper.clientWidth || base.width;
+        const scale = (width / base.width) * (window.devicePixelRatio || 1);
+        const viewport = page.getViewport({ scale });
+        canvas.width = Math.max(1, Math.floor(viewport.width));
+        canvas.height = Math.max(1, Math.floor(viewport.height));
+        const context = canvas.getContext("2d");
+        if (!context) return;
+        task?.cancel();
+        task = page.render({ canvas, canvasContext: context, viewport });
+        await task.promise;
+      } catch {
+        // Cancelled renders are expected while resizing; the next paint wins.
+      }
+    };
+
+    void draw();
+
+    const observer = new ResizeObserver(() => {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => {
+        void draw();
+      }, 120);
+    });
+    observer.observe(wrapper);
+
+    return () => {
+      observer.disconnect();
+      clearTimeout(resizeTimer);
+      task?.cancel();
+    };
+  }, [docVersion]);
 
   return (
-    <div className="pdf-page">
-      <img className="preview-logo" src={logoUrl || "/api/labels/logo"} alt="Template logo" />
-      <div
-        className="preview-title"
-        style={{ fontSize: `${(pickTitleFontSize(productName) / 2) * 1.25}px` }}
-      >
-        {productName || "Your product name"}
-      </div>
-      <div className="preview-item">ITEM #{itemNumber || "—"}</div>
-      <div className="preview-storage">{storageInstruction || "STORAGE"}</div>
-      <div className="preview-lot">
-        LOT CODE: {lotCode || "—"}
-        <br />
-        BEST BEFORE: {bestBefore ? bestBefore.replaceAll("-", "/") : "—"}
-      </div>
-      <div className="preview-ingredients">
-        <strong>Ingredients:</strong>{" "}
-        {ingredients || "Ingredient list appears here as you type"}
-      </div>
-      <div className="preview-barcode">
-        {barcodePreviewUrl ? (
-          <img src={barcodePreviewUrl} alt="Generated GS1 barcode preview" />
+    <div className="preview-pdf-card">
+      <div className="preview-pdf-frame" ref={wrapperRef}>
+        {pdfBytes ? (
+          <canvas ref={canvasRef} className="preview-pdf-canvas" aria-label="Label PDF preview" />
         ) : (
-          <span className="barcode-placeholder">Barcode preview</span>
-        )}
-        {gtin && bestBefore && lotCode ? (
-          <small>
-            (01){gtin}(15){bestBefore.replaceAll("-", "").slice(2)}(10){lotCode}
-          </small>
-        ) : (
-          <small>The barcode number appears here once GTIN, date, and lot are filled in</small>
+          <div className="preview-pdf-loading">Building label preview…</div>
         )}
       </div>
-      <div className="preview-address">
-        <strong>{company}</strong>
-        {addressLine ? <span>{addressLine}</span> : null}
-      </div>
+      {previewError ? <p className="preview-pdf-error">{previewError}</p> : null}
     </div>
   );
 }

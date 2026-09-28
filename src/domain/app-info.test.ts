@@ -106,7 +106,7 @@ describe("readDataWorkbook", () => {
     const bytes = new Uint8Array(await readFile(path.join(process.cwd(), "data.xlsx")));
     const info = await readDataWorkbook(bytes);
     expect(info.version).toBe(DEFAULT_APP_INFO.version);
-    expect(info.releaseUpdate).toContain("Drag & drop");
+    expect(info.releaseUpdate).toBe(DEFAULT_APP_INFO.releaseUpdate);
     expect(info.address).toBe(DEFAULT_APP_INFO.address);
     expect(dataWorkbookPath()).toBe(path.join(process.cwd(), "data.xlsx"));
   });

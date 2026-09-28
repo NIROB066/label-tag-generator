@@ -1,5 +1,7 @@
 import path from "node:path";
 
+import { LABEL_GEOMETRY } from "@/domain/label-geometry";
+
 /**
  * Single source of truth for the label template structure. Every text box
  * name, media path, and geometry constant used by the writer/reader/logo
@@ -19,18 +21,7 @@ export const LABEL_TEMPLATE = {
   barcodeDrawing: "Picture 7",
   barcodeMediaPath: "word/media/image2.png",
   logoMediaPath: "word/media/image1.jpeg",
-  geometry: {
-    // Barcode drawing anchor: 3.4" x 0.81" high-clarity artwork slot.
-    barcodeAnchor: { widthEmu: 3108960, heightEmu: 740664 },
-    // Human-readable GS1 text sits just below the barcode artwork.
-    humanReadableBarcodeOffsetEmu: 912114,
-    // Ingredients box grows from compact to expanded when text is long.
-    ingredientsBox: {
-      widthEmu: 3211195,
-      compactHeightEmu: 1276350,
-      expandedHeightEmu: 1508760,
-    },
-  },
+  geometry: LABEL_GEOMETRY,
 } as const;
 
 export function labelTemplatePath(): string {
