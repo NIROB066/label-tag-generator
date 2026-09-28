@@ -32,6 +32,10 @@ type AppInfoClient = {
 const DOCX_MIME =
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 
+// Stores the version the user last acknowledged in the what's-new modal;
+// the modal reappears only when the running version differs from it.
+const WHATS_NEW_STORAGE_KEY = "label-tag-studio:whats-new-version";
+
 // The Create form starts empty; every field shows an example placeholder
 // instead of pre-filled hardcoded sample data.
 const initialForm = {
@@ -584,6 +588,35 @@ export default function Home() {
 
   const selectedLabelIndex = selectedRow ? rows.findIndex((r) => r.id === selectedRow.id) + 1 : 0;
 
+  // One-time what's-new modal: shown until the user acknowledges the current
+  // version, then never again for that version.
+  const [whatsNewAcknowledged, setWhatsNewAcknowledged] = useState(true);
+  const appVersion = appInfo?.version ?? null;
+
+  useEffect(() => {
+    if (!appVersion) return;
+    // Deferred a tick so the acknowledged check runs after hydration and
+    // outside the effect's synchronous render pass.
+    const timer = setTimeout(() => {
+      try {
+        const acknowledged = window.localStorage.getItem(WHATS_NEW_STORAGE_KEY);
+        setWhatsNewAcknowledged(acknowledged === appVersion);
+      } catch {
+        // Storage unavailable (private mode) — skip the modal.
+      }
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [appVersion]);
+
+  const acknowledgeWhatsNew = () => {
+    try {
+      if (appVersion) window.localStorage.setItem(WHATS_NEW_STORAGE_KEY, appVersion);
+    } catch {
+      // Ignore write failures; the modal just reappears next visit.
+    }
+    setWhatsNewAcknowledged(true);
+  };
+
   return (
     <main className="app-shell">
       {toastMessage ? (
@@ -1029,6 +1062,14 @@ export default function Home() {
           Guide
         </Link>
       </nav>
+
+      {!whatsNewAcknowledged && appInfo ? (
+        <WhatsNewModal
+          version={appInfo.version}
+          releaseUpdate={appInfo.releaseUpdate}
+          onAcknowledge={acknowledgeWhatsNew}
+        />
+      ) : null}
     </main>
   );
 
@@ -1171,8 +1212,83 @@ function ThemeToggle() {
   );
 }
 
-function VersionBadge({ version, releaseUpdate }: { version: string; releaseUpdate: string }) {
-  const [open, setOpen] = useState(false);
+/**
+ * One-time-per-version release modal. It shows the release notes plus a
+ * quick user-guide refresher and can only be closed through the
+ * "I have read" acknowledgement button, which records the version.
+ */
+function WhatsNewModal({
+  version,
+  releaseUpdate,
+  onAcknowledge,
+}: {
+  version: string;
+  releaseUpdate: string;
+  onAcknowledge: () => void;
+}) {
+  const acknowledgeRef = useRef<HTMLButtonElement | null>(null);
+
+  useEffect(() => {
+    acknowledgeRef.current?.focus();
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, []);
+
+  const lines = releaseUpdate.split("\n").map((line) => line.trim()).filter(Boolean);
+  const notes = lines
+    .slice(1)
+    .map((line) => line.replace(/^[-•]\s*/, ""))
+    .filter(Boolean);
+
+  return (
+    <div className="whats-new-overlay">
+      <div
+        className="whats-new-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="whats-new-title"
+      >
+        <div>
+          <p className="eyebrow">Release update</p>
+          <h2 className="whats-new-title" id="whats-new-title">
+            Version {version}
+          </h2>
+        </div>
+        {notes.length > 0 ? (
+          <ul className="whats-new-notes">
+            {notes.map((note) => (
+              <li key={note}>{note}</li>
+            ))}
+          </ul>
+        ) : null}
+        <div className="whats-new-guide">
+          <strong>User guide — quick refresher</strong>
+          <ol>
+            <li>Create: enter the label data, then Generate DOCX.</li>
+            <li>Check &amp; fix: upload .docx labels or a .zip, review, fix and download.</li>
+            <li>Editing labels later: change the number under the barcode, upload, fix.</li>
+          </ol>
+          <Link className="text-link-btn" href="/guide">
+            Open the full user guide
+          </Link>
+        </div>
+        <button
+          ref={acknowledgeRef}
+          type="button"
+          className="primary-button whats-new-ack"
+          onClick={onAcknowledge}
+        >
+          I have read — close
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function VersionBadge({ version, releaseUpdate }: { version: string; releaseUpdate: string }) {  const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {

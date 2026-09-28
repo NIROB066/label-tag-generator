@@ -320,13 +320,6 @@ function drawFooter(
   }
 }
 
-function wordTokens(text: string, size: number, bold = false): FlowToken[] {
-  return text
-    .split(" ")
-    .filter(Boolean)
-    .map((word) => ({ text: word, bold, size, glued: false }));
-}
-
 /** Word-boundary-only wrap; never breaks a word mid-line. */
 function wrapWholeWords(font: PDFFont, size: number, text: string, maxWidth: number): string[] {
   const lines: string[] = [];
