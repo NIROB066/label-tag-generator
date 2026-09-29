@@ -8,6 +8,7 @@ import {
   TITLE_FONT_MIN_HALF_POINTS,
   INGREDIENTS_FONT_MAX_HALF_POINTS,
   INGREDIENTS_FONT_MIN_HALF_POINTS,
+  normalizeIngredientsSpacing,
 } from "@/domain/label-typography";
 
 describe("estimateWrappedLines", () => {
@@ -48,7 +49,7 @@ describe("pickTitleFontSize", () => {
 
   it("shrinks a long real-world name to two lines instead of overflowing", () => {
     const size = pickTitleFontSize("IRHU moni chocolate khabe chowar sathe");
-    expect(size).toBe(22);
+    expect(size).toBe(24);
     expect(estimateWrappedLines("IRHU moni chocolate khabe chowar sathe", size, TITLE_BOX_WIDTH_PT)).toBeLessThanOrEqual(2);
   });
 
@@ -81,6 +82,87 @@ describe("pickTitleFontSize", () => {
         expect(estimateWrappedLines(name, size, TITLE_BOX_WIDTH_PT)).toBeLessThanOrEqual(2);
       }
     }
+  });
+});
+
+describe("normalizeIngredientsSpacing", () => {
+  it("inserts a single space after commas with no following space", () => {
+    expect(normalizeIngredientsSpacing("Eggs,sugar,wheat flour")).toBe("Eggs, sugar, wheat flour");
+  });
+
+  it("leaves commas that already have a space untouched", () => {
+    expect(normalizeIngredientsSpacing("Eggs, sugar, wheat flour")).toBe(
+      "Eggs, sugar, wheat flour",
+    );
+  });
+
+  it("handles mixed spacing across the declaration", () => {
+    expect(normalizeIngredientsSpacing("Eggs, sugar,wheat flour,margarine")).toBe(
+      "Eggs, sugar, wheat flour, margarine",
+    );
+  });
+
+  it("does not append a space when the comma ends the text", () => {
+    expect(normalizeIngredientsSpacing("Eggs, sugar,")).toBe("Eggs, sugar,");
+  });
+
+  it("leaves text without commas and empty text unchanged", () => {
+    expect(normalizeIngredientsSpacing("Wheat flour")).toBe("Wheat flour");
+    expect(normalizeIngredientsSpacing("")).toBe("");
+  });
+
+  it("adds a space after a closing parenthesis followed by a word", () => {
+    expect(normalizeIngredientsSpacing("Milk (pasteurized)sugar")).toBe(
+      "Milk (pasteurized) sugar",
+    );
+    expect(normalizeIngredientsSpacing("(a)(b)")).toBe("(a) (b)");
+  });
+
+  it("does not add a space between a closing parenthesis and a comma", () => {
+    expect(normalizeIngredientsSpacing("Milk (pasteurized),sugar")).toBe(
+      "Milk (pasteurized), sugar",
+    );
+    expect(normalizeIngredientsSpacing("Milk (pasteurized), sugar")).toBe(
+      "Milk (pasteurized), sugar",
+    );
+  });
+
+  it("leaves a closing parenthesis followed by whitespace or end of text unchanged", () => {
+    expect(normalizeIngredientsSpacing("Milk (pasteurized) sugar")).toBe(
+      "Milk (pasteurized) sugar",
+    );
+    expect(normalizeIngredientsSpacing("Milk (pasteurized)")).toBe("Milk (pasteurized)");
+  });
+
+  it("does not add a space after an empty parenthesis pair", () => {
+    expect(normalizeIngredientsSpacing("Milk()sugar")).toBe("Milk ()sugar");
+  });
+
+  it("does not add a space after a closing parenthesis preceded by a non-letter", () => {
+    expect(normalizeIngredientsSpacing("Salt (2%)sugar")).toBe("Salt (2%)sugar");
+    expect(normalizeIngredientsSpacing("E330(2%)salt")).toBe("E330(2%)salt");
+  });
+
+  it("keeps nested closing parentheses glued together", () => {
+    expect(normalizeIngredientsSpacing("(E160a(ii)))")).toBe("(E160a (ii)))");
+    expect(normalizeIngredientsSpacing("Colour (E160a(ii)),sugar")).toBe(
+      "Colour (E160a (ii)), sugar",
+    );
+  });
+
+  it("adds a space before an opening parenthesis preceded by a letter", () => {
+    expect(normalizeIngredientsSpacing("Milk(pasteurized),sugar")).toBe(
+      "Milk (pasteurized), sugar",
+    );
+    expect(normalizeIngredientsSpacing("Milk(pasteurized)sugar")).toBe(
+      "Milk (pasteurized) sugar",
+    );
+  });
+
+  it("leaves an opening parenthesis unchanged when not preceded by a letter", () => {
+    expect(normalizeIngredientsSpacing("Milk (pasteurized)")).toBe("Milk (pasteurized)");
+    expect(normalizeIngredientsSpacing("(pasteurized) milk")).toBe("(pasteurized) milk");
+    expect(normalizeIngredientsSpacing("4(pasteurized)")).toBe("4(pasteurized)");
   });
 });
 

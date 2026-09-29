@@ -7,6 +7,7 @@ import { buildGs1Payload } from "@/domain/gs1";
 import { LABEL_TEMPLATE, labelTemplatePath } from "@/domain/label-template";
 import {
   INGREDIENTS_LONG_THRESHOLD,
+  normalizeIngredientsSpacing,
   pickIngredientFontSize,
   pickTitleFontSize,
 } from "@/domain/label-typography";
@@ -28,10 +29,10 @@ const PAPER = rgb(1, 1, 1);
 /** Label element geometry in points; y is measured from the page top. */
 const LAYOUT = {
   logo: { x: 0, yTop: 31.6, w: 172.8, h: 54.3 },
-  title: { x: 151.6, yTop: 37.9, w: 131.3, h: 52.4, textX: 159.1, wrapWidth: 116 },
+  title: { x: 151.6, yTop: 37.9, w: 140.4, h: 62.64, textX: 159.1, wrapWidth: 126 },
   item: { x: 172.1, yTop: 9.2, w: 95, h: 21.9, textX: 179.5 },
-  lot: { x: 16.5, yTop: 91.4, w: 154.5, h: 63.9, textX: 24.2, firstBaseline: 22.4, linePitch: 21.8 },
-  storage: { x: 187.7, yTop: 91.7, w: 81.2, h: 50.1, firstBaselineOffset: 18.9, linePitchFactor: 1.224 },
+  lot: { x: 16.5, yTop: 100.4, w: 154.5, h: 63.9, textX: 24.2, firstBaseline: 22.4, linePitch: 21.8 },
+  storage: { x: 187.7, yTop: 100.7, w: 81.2, h: 50.1, firstBaselineOffset: 18.9, linePitchFactor: 1.224 },
   ingredients: {
     x: 17.1,
     yTop: 166.7,
@@ -212,7 +213,8 @@ function drawStorageBox(page: PDFPage, fonts: Fonts, storageInstruction: string)
   });
 }
 
-function drawIngredients(page: PDFPage, fonts: Fonts, ingredients: string) {
+function drawIngredients(page: PDFPage, fonts: Fonts, rawIngredients: string) {
+  const ingredients = normalizeIngredientsSpacing(rawIngredients);
   const config = LAYOUT.ingredients;
   const boxHeight =
     ingredients.length > INGREDIENTS_LONG_THRESHOLD ? config.expandedH : config.compactH;

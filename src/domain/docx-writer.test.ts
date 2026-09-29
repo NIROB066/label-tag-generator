@@ -75,6 +75,20 @@ describe("DOCX label generation", () => {
     expect(namedAnchor(generatedXml ?? "", "Text Box 7")).toContain(
       "<wp:posOffset>1136416</wp:posOffset>",
     );
+    // Title box is resized to 1.95" x 0.87".
+    expect(namedAnchor(generatedXml ?? "", "Text Box 2")).toContain(
+      '<wp:extent cx="1783080" cy="795528"/>',
+    );
+    expect(namedAnchor(generatedXml ?? "", "Text Box 2")).toContain(
+      '<a:ext cx="1783080" cy="795528"/>',
+    );
+    // Lot/best-before and storage boxes are nudged below the logo/title.
+    expect(namedAnchor(generatedXml ?? "", "Text Box 3")).toContain(
+      "<wp:posOffset>361716</wp:posOffset>",
+    );
+    expect(namedAnchor(generatedXml ?? "", "Text Box 4")).toContain(
+      "<wp:posOffset>180574</wp:posOffset>",
+    );
   });
 
   it("shrinks long content without changing the template structure", async () => {

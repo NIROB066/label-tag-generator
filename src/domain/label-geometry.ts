@@ -9,6 +9,13 @@ export const LABEL_GEOMETRY = {
   barcodeAnchor: { widthEmu: 3108960, heightEmu: 740410 },
   // Human-readable GS1 text box ("Text Box 7") sits just below the artwork.
   humanReadableBarcodeOffsetEmu: 1136416,
+  // Title box ("Text Box 2") is sized at 1.95" x 0.87".
+  titleBox: { widthEmu: 1783080, heightEmu: 795528 },
+  // Lot/best-before ("Text Box 3") and storage ("Text Box 4") boxes sit a
+  // 0.125" nudge (four arrow presses) below the logo/title block so their
+  // borders never collide with it.
+  lotAndBestBeforeOffsetEmu: 361716,
+  storageInstructionOffsetEmu: 180574,
   // Ingredients box grows from compact to expanded when text is long.
   ingredientsBox: {
     widthEmu: 3211195,

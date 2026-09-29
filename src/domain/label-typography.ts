@@ -7,8 +7,8 @@
 /** Average glyph width as a fraction of the font size, measured against the template serif face. */
 const AVG_CHAR_WIDTH_FACTOR = 0.55;
 
-/** Usable inner width of the product-name text box ("Text Box 2"): 1.82" box minus default 0.1" side insets. */
-export const TITLE_BOX_WIDTH_PT = 116;
+/** Usable inner width of the product-name text box ("Text Box 2"): 1.95" box minus default 0.1" side insets. */
+export const TITLE_BOX_WIDTH_PT = 126;
 
 /** Template title size (half-points, i.e. 21pt) applied when it fits. */
 export const TITLE_FONT_MAX_HALF_POINTS = 42;
@@ -87,6 +87,22 @@ export function pickTitleFontSize(productName: string): number {
   }
 
   return size;
+}
+
+/**
+ * Ensures ingredient declarations read consistently: every comma gets a
+ * single space before the next word; a closing parenthesis directly
+ * followed by another word gains a single space — but only when the
+ * parenthesis closes a word (the character before it is a letter) and
+ * what follows is not a comma or another closing parenthesis; and an
+ * opening parenthesis preceded directly by a letter gains a single
+ * space before it.
+ */
+export function normalizeIngredientsSpacing(ingredients: string): string {
+  return ingredients
+    .replace(/,(?=\S)/g, ", ")
+    .replace(/(?<=[A-Za-z])\)(?=[^,\s)])/g, ") ")
+    .replace(/(?<=[A-Za-z])\(/g, " (");
 }
 
 /**

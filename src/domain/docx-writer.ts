@@ -9,6 +9,7 @@ import {
 import {
   INGREDIENTS_FONT_MAX_HALF_POINTS,
   INGREDIENTS_LONG_THRESHOLD,
+  normalizeIngredientsSpacing,
   pickIngredientFontSize,
   pickTitleFontSize,
 } from "@/domain/label-typography";
@@ -28,6 +29,7 @@ export async function generateLabelDocxFromTemplate(
   barcodePng: Buffer,
 ): Promise<Buffer> {
   const payload = buildGs1Payload(input);
+  const ingredients = normalizeIngredientsSpacing(input.ingredients);
   const { textBoxes, barcodeDrawing, barcodeMediaPath, geometry } = LABEL_TEMPLATE;
   const zip = await JSZip.loadAsync(template, { checkCRC32: true });
   const documentEntry = zip.file("word/document.xml");
@@ -43,13 +45,19 @@ export async function generateLabelDocxFromTemplate(
   );
   documentXml = replaceTextBox(documentXml, textBoxes.storageInstruction, input.storageInstruction);
   documentXml = updateTextBox(documentXml, textBoxes.ingredients, (content) =>
-    updateIngredientsRuns(content, input.ingredients),
+    updateIngredientsRuns(content, ingredients),
   );
   documentXml = updateTextBox(documentXml, textBoxes.productName, (content) =>
     applyFontSize(content, pickTitleFontSize(input.productName)),
   );
+  documentXml = updateAnchorGeometry(
+    documentXml,
+    textBoxes.productName,
+    geometry.titleBox.widthEmu,
+    geometry.titleBox.heightEmu,
+  );
   documentXml = updateTextBox(documentXml, textBoxes.ingredients, (content) =>
-    updateIngredientFontSize(content, input.ingredients),
+    updateIngredientFontSize(content, ingredients),
   );
   documentXml = updateAnchorGeometry(
     documentXml,
@@ -62,11 +70,21 @@ export async function generateLabelDocxFromTemplate(
     textBoxes.humanReadableBarcode,
     geometry.humanReadableBarcodeOffsetEmu,
   );
+  documentXml = updateVerticalOffset(
+    documentXml,
+    textBoxes.lotAndBestBefore,
+    geometry.lotAndBestBeforeOffsetEmu,
+  );
+  documentXml = updateVerticalOffset(
+    documentXml,
+    textBoxes.storageInstruction,
+    geometry.storageInstructionOffsetEmu,
+  );
   documentXml = updateAnchorGeometry(
     documentXml,
     textBoxes.ingredients,
     geometry.ingredientsBox.widthEmu,
-    input.ingredients.length > INGREDIENTS_LONG_THRESHOLD
+    ingredients.length > INGREDIENTS_LONG_THRESHOLD
       ? geometry.ingredientsBox.expandedHeightEmu
       : geometry.ingredientsBox.compactHeightEmu,
   );
