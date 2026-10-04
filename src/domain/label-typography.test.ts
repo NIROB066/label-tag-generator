@@ -36,6 +36,27 @@ describe("estimateWrappedLines", () => {
   });
 });
 
+describe("estimateWrappedLines word breaking", () => {
+  it("keeps a word whole when it fits within a full line", () => {
+    // 30pt box at 10pt gives floor(30 / (10 * 0.55)) = 5 chars per line, so
+    // "Dark" (4 chars) must stay on one line even at the right box edge.
+    expect(estimateWrappedLines("Dark", 20, 30)).toBe(1);
+  });
+
+  it("moves a trailing word wholly to the next line instead of splitting it", () => {
+    // 44pt box at 10pt = 8 chars per line: "Eggs Dark" (9 chars) wraps as
+    // "Eggs" / "Dark" — never "Eggs D" / "ark" with "D" left behind.
+    expect(estimateWrappedLines("Eggs Dark", 20, 44)).toBe(2);
+    // 50pt box at 10pt = 9 chars per line: the full text fits one line.
+    expect(estimateWrappedLines("Eggs Dark", 20, 50)).toBe(1);
+  });
+
+  it("only breaks a word across lines when it is longer than a whole line", () => {
+    // 8 chars per line: a 12-character ingredient word occupies 2 lines.
+    expect(estimateWrappedLines("blackcurrant", 20, 44)).toBe(2);
+  });
+});
+
 describe("pickTitleFontSize", () => {
   it("keeps the template size for short names", () => {
     expect(pickTitleFontSize("Lava Cake 3 Inch")).toBe(TITLE_FONT_MAX_HALF_POINTS);

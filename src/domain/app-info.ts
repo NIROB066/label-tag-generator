@@ -16,12 +16,8 @@ export type AppInfo = {
 };
 
 export const DEFAULT_APP_INFO: AppInfo = {
-  version: "1.2.1",
-  releaseUpdate: [
-    "Version 1.2.1",
-    '- Label layout: more room for ingredients; the list starts right after "Ingredients:".',
-    "- Create preview: full-size PDF preview that matches the printed label.",
-  ].join("\n"),
+  version: "1.2.2",
+  releaseUpdate: "v1.2.2\n- Word breaking fix",
   address: "Gastronomique pastry INC, 7621 vantage way, Delta, BC V4G 1A6",
 };
 

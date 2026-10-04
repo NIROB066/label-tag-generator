@@ -36,6 +36,17 @@ Run `npm test`, `npm run lint`, and `npx tsc --noEmit` before finishing any chan
 - `src/app/api/labels/*` — Node-runtime route handlers (generate, scan, repair, barcode, logo). Batch repair runs client-side per file over the repair route.
 - `public/` — PWA manifest, service worker (`sw.js`), and generated icons.
 
+## Versioning & data.xlsx
+
+`data.xlsx` is generated output — never hand-edit it in Excel. Hand edits mangle cells (e.g. space runs inside the release note) and re-saving can drop the embedded logo. To change the version, release note, or address:
+
+1. Edit `VERSION` and `RELEASE_UPDATE` in `scripts/generate-data-xlsx.mjs`.
+2. Mirror both values in `DEFAULT_APP_INFO` (`src/domain/app-info.ts`) — the app-info fixture test asserts the workbook matches the defaults.
+3. Regenerate the workbook: `node scripts/generate-data-xlsx.mjs` (re-embeds the logo from the sample template).
+4. Run `npm test` to confirm the fixture still matches.
+
+Version bumps: bug fixes bump the patch (`x.y.Z`); new features bump the minor (`x.Y.0`). Release-update format: first line is `v<VERSION>`, then one `- ` bullet per user-visible change, joined with newlines (e.g. `v1.2.2\n- Word breaking fix`). Keep bullets short and user-facing.
+
 ## Invariants
 
 - The barcode number written on the document is the truth — the full `(01)…(15)…(10)…` number visibly printed on the label supplies the expected GTIN, best-before, and lot; LOT CODE / BEST BEFORE text lines and a drawing's `descr` alt-text are fallbacks only, and text lines that disagree with the written number are flagged (`BEST_BEFORE_MISMATCH`, `LOT_MISMATCH`, `BARCODE_VALUE_MISMATCH`) and corrected by repair.

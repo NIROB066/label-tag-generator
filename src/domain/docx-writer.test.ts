@@ -149,6 +149,49 @@ describe("DOCX label generation", () => {
     expect(ingredientsBox).toContain(`<w:sz w:val="${expectedSize}"/>`);
     expect(ingredientsBox).toContain('<wp:extent cx="3211195" cy="2013284"/>');
   });
+
+  it("forbids mid-word line breaking in every prose box paragraph", async () => {
+    // The template ships with East Asian layout rules (<w:useFELayout/>)
+    // that let Word split Latin words at the right box edge ("D" / "ark").
+    // Every paragraph of the wrapping prose boxes must carry
+    // <w:wordWrap w:val="0"/> so words wrap whole instead.
+    const wordBreakInput = {
+      ...input,
+      ingredients: "Eggs, sugar, wheat flour, margarine (modified palm oil, water, monoglycerides), Dark Chocolate, cocoa butter.",
+    };
+    const barcode = await generateGs1BarcodePng(buildGs1Payload(wordBreakInput));
+    const template = await readFile(path.join(process.cwd(), "sample", "Lava Cake Label 6''x4''.docx"));
+    const document = await generateLabelDocxFromTemplate(template, wordBreakInput, barcode);
+    const zip = await JSZip.loadAsync(document);
+    const xml = (await zip.file("word/document.xml")?.async("text")) ?? "";
+
+    for (const name of ["Text Box 2", "Text Box 4", "Text Box 5"]) {
+      const box = namedAnchor(xml, name);
+      const paragraphs = box.match(/<w:p(?:\s[^>]*)?>/g) ?? [];
+      expect(paragraphs.length, `${name} has paragraphs`).toBeGreaterThan(0);
+      const wrappedParagraphs = box.match(/<w:pPr(?:\s[^>]*)?><w:wordWrap w:val="0"\/>/g) ?? [];
+      expect(wrappedParagraphs, `${name} wraps whole words in every paragraph`).toHaveLength(paragraphs.length);
+      expect(box.match(/<w:wordWrap/g)?.length).toBe(paragraphs.length);
+    }
+
+    const ingredientsBox = namedAnchor(xml, "Text Box 5");
+    expect(ingredientsBox).toContain("Dark Chocolate");
+    expect(ingredientsBox.indexOf("<w:wordWrap")).toBeLessThan(ingredientsBox.indexOf("Ingredients:"));
+  });
+
+  it("keeps the barcode number box character-breakable", async () => {
+    // The human-readable GS1 number is one long unbreakable token; it must
+    // not get whole-word wrapping or it could overflow its box instead of
+    // wrapping at the character level as a last resort.
+    const barcode = await generateGs1BarcodePng(buildGs1Payload(input));
+    const template = await readFile(path.join(process.cwd(), "sample", "Lava Cake Label 6''x4''.docx"));
+    const document = await generateLabelDocxFromTemplate(template, input, barcode);
+    const zip = await JSZip.loadAsync(document);
+    const xml = (await zip.file("word/document.xml")?.async("text")) ?? "";
+
+    expect(namedAnchor(xml, "Text Box 7")).not.toContain("<w:wordWrap");
+    expect(namedAnchor(xml, "Text Box 7")).toContain("(01)10627146285749(15)250923(10)72722");
+  });
 });
 
 function fileEntries(zip: JSZip): string[] {

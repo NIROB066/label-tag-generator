@@ -59,6 +59,14 @@ export async function generateLabelDocxFromTemplate(
   documentXml = updateTextBox(documentXml, textBoxes.ingredients, (content) =>
     updateIngredientFontSize(content, ingredients),
   );
+  // Whole-word line breaking: the template's East Asian layout compat rules
+  // (<w:useFELayout/>) let Word split Latin words mid-word at the right edge
+  // of a text box (e.g. "D" / "ark"). Forbid it for every prose box. The
+  // human-readable barcode box must stay character-breakable so a long GS1
+  // number can still fall back to wrapping within its box.
+  documentXml = updateTextBox(documentXml, textBoxes.productName, wrapWholeWords);
+  documentXml = updateTextBox(documentXml, textBoxes.storageInstruction, wrapWholeWords);
+  documentXml = updateTextBox(documentXml, textBoxes.ingredients, wrapWholeWords);
   documentXml = updateAnchorGeometry(
     documentXml,
     barcodeDrawing,
@@ -276,6 +284,22 @@ function updateVerticalOffset(documentXml: string, name: string, offsetEmu: numb
     `$1${offsetEmu}$2`,
   );
   return documentXml.slice(0, anchorStart) + updatedAnchor + documentXml.slice(anchorEnd + "</wp:anchor>".length);
+}
+
+const WORD_WRAP_OFF = '<w:wordWrap w:val="0"/>';
+
+/**
+ * Forbids mid-word line breaking in every paragraph of a text box's content
+ * so Latin words wrap whole ("Dark" never renders as "D" + "ark"). The
+ * template's <w:useFELayout/> compat rules enable East Asian character-level
+ * wrapping otherwise. Idempotent: re-applying replaces instead of duplicating.
+ */
+function wrapWholeWords(content: string): string {
+  return content
+    .replace(/<w:wordWrap(?:\s[^>]*)?\/>/g, "")
+    .replace(/<w:pPr\/>/g, `<w:pPr>${WORD_WRAP_OFF}</w:pPr>`)
+    .replace(/<w:pPr((?:\s[^>]*)?)>(?!<w:wordWrap)/g, `<w:pPr$1>${WORD_WRAP_OFF}`)
+    .replace(/<w:p((?:\s[^>]*)?)>(?!<w:pPr)/g, `<w:p$1><w:pPr>${WORD_WRAP_OFF}</w:pPr>`);
 }
 
 const TEXT_TAG = /<w:t(?: [^>]*)?>[\s\S]*?<\/w:t>/g;
