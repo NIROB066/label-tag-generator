@@ -16,8 +16,8 @@ export type AppInfo = {
 };
 
 export const DEFAULT_APP_INFO: AppInfo = {
-  version: "1.2.2",
-  releaseUpdate: "v1.2.2\n- Word breaking fix",
+  version: "1.2.3",
+  releaseUpdate: "v1.2.3\n- Words no longer split across lines on labels.\n- Ingredient text stays larger and fills the label box better.",
   address: "Gastronomique pastry INC, 7621 vantage way, Delta, BC V4G 1A6",
 };
 

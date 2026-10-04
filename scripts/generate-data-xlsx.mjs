@@ -10,8 +10,12 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import ExcelJS from "exceljs";
 
-const VERSION = "1.2.2";
-const RELEASE_UPDATE = [`v${VERSION}`, "- Word breaking fix"].join("\n");
+const VERSION = "1.2.3";
+const RELEASE_UPDATE = [
+  `v${VERSION}`,
+  "- Words no longer split across lines on labels.",
+  "- Ingredient text stays larger and fills the label box better.",
+].join("\n");
 const ADDRESS = "Gastronomique pastry INC, 7621 vantage way, Delta, BC V4G 1A6";
 
 // Source logo is 528x190 px; drawn at 160 px wide to keep the aspect ratio.
