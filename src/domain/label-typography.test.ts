@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   estimateWrappedLines,
+  ingredientsLineCapacity,
   pickIngredientFontSize,
   pickTitleFontSize,
   TITLE_BOX_WIDTH_PT,
   TITLE_FONT_MAX_HALF_POINTS,
   TITLE_FONT_MIN_HALF_POINTS,
+  INGREDIENTS_BOX_EXPANDED_HEIGHT_PT,
+  INGREDIENTS_BOX_WIDTH_PT,
   INGREDIENTS_FONT_MAX_HALF_POINTS,
   INGREDIENTS_FONT_MIN_HALF_POINTS,
   normalizeIngredientsSpacing,
@@ -193,14 +196,22 @@ describe("pickIngredientFontSize", () => {
     expect(pickIngredientFontSize("x".repeat(120))).toBe(INGREDIENTS_FONT_MAX_HALF_POINTS);
   });
 
-  it("steps down at each threshold", () => {
-    expect(pickIngredientFontSize("x".repeat(121))).toBe(18);
-    expect(pickIngredientFontSize("x".repeat(280))).toBe(18);
-    expect(pickIngredientFontSize("x".repeat(281))).toBe(16);
-    expect(pickIngredientFontSize("x".repeat(400))).toBe(16);
-    expect(pickIngredientFontSize("x".repeat(401))).toBe(14);
-    expect(pickIngredientFontSize("x".repeat(520))).toBe(14);
-    expect(pickIngredientFontSize("x".repeat(521))).toBe(12);
+  it("uses the expanded box before shrinking below the template size", () => {
+    // 520 chars fit the expanded box at 9pt, so no need to go smaller.
+    expect(pickIngredientFontSize("x".repeat(520))).toBe(18);
+  });
+
+  it("keeps a long real-world declaration as large as the expanded box allows", () => {
+    const declaration =
+      "Enrichedwheatflour (contains, whaetflour, Niacin, reduced Iron, Thiamine, mononitrate, Riboflavin, Folic Acid) Graham flour, sugar, palm oil,  HighFructose corn Syrup, Molasses, salt, Baking Soda. Cream cheese (Milk ingredients, salt, Bacterial culture, xanthan gum, carob bean gum, guar gum, potassium sorbate) . Cream , Raspberries, Modified corn starch, Citric acid, Concentrated carrot juice, Natural flavour, Salt, Potassium sorbate, Sodium benzoate.. dehydrated corn syrup, sugar, animal gelatin (bovine), skimmed milk powder, starch, flavouring. Stablizer (Sugar, glucose, water, Tetrasodium Pyrophosphate, Disodium Phosphate) .";
+    expect(pickIngredientFontSize(declaration)).toBe(16);
+    expect(
+      estimateWrappedLines(declaration, 16, INGREDIENTS_BOX_WIDTH_PT),
+    ).toBeLessThanOrEqual(ingredientsLineCapacity(INGREDIENTS_BOX_EXPANDED_HEIGHT_PT, 16));
+    // One size bigger would overflow the box, so 16 is the largest that fits.
+    expect(estimateWrappedLines(declaration, 18, INGREDIENTS_BOX_WIDTH_PT)).toBeGreaterThan(
+      ingredientsLineCapacity(INGREDIENTS_BOX_EXPANDED_HEIGHT_PT, 18),
+    );
   });
 
   it("never drops below the readability floor", () => {

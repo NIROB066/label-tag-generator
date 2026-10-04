@@ -25,11 +25,31 @@ export const INGREDIENTS_FONT_MAX_HALF_POINTS = 20;
 /** Floor for ingredient text so it stays legally readable on print. */
 export const INGREDIENTS_FONT_MIN_HALF_POINTS = 12;
 
-/** Ingredient lengths (in characters) that trigger each shrink step. */
-export const INGREDIENTS_SHRINK_THRESHOLDS = [120, 280, 400, 520] as const;
+/** Ingredient lists longer than this expand the text box to its taller preset. */
+export const INGREDIENTS_LONG_THRESHOLD = 120;
 
-/** Ingredients longer than this expand the text box to its taller preset. */
-export const INGREDIENTS_LONG_THRESHOLD = INGREDIENTS_SHRINK_THRESHOLDS[0];
+/** Usable inner width of the ingredients text box ("Text Box 5"): 3.51" box minus default 0.1" side insets. */
+export const INGREDIENTS_BOX_WIDTH_PT = 238;
+
+/** Compact and expanded ingredients box heights (1.396" / 2.202") in points. */
+export const INGREDIENTS_BOX_COMPACT_HEIGHT_PT = 100.5;
+export const INGREDIENTS_BOX_EXPANDED_HEIGHT_PT = 158.5;
+
+/** First baseline sits 13.5pt below the box top; wrapped value lines drop 9.2pt then pitch at 1.267 × size. */
+const INGREDIENTS_FIRST_BASELINE_PT = 13.5;
+const INGREDIENTS_FIRST_VALUE_DROP_PT = 9.2;
+const INGREDIENTS_LINE_PITCH_FACTOR = 1.267;
+
+/**
+ * Wrapped value lines that fit the ingredients box at `fontHalfPoints`:
+ * baseline of the last line must clear the box bottom including descent.
+ */
+export function ingredientsLineCapacity(boxHeightPt: number, fontHalfPoints: number): number {
+  const size = fontHalfPoints / 2;
+  const usable =
+    boxHeightPt - INGREDIENTS_FIRST_BASELINE_PT - INGREDIENTS_FIRST_VALUE_DROP_PT - 0.25 * size;
+  return Math.max(1, 1 + Math.floor(usable / (size * INGREDIENTS_LINE_PITCH_FACTOR)));
+}
 
 /**
  * Greedy word-wrap line count for `text` rendered at `fontHalfPoints`
@@ -106,17 +126,25 @@ export function normalizeIngredientsSpacing(ingredients: string): string {
 }
 
 /**
- * Picks the ingredient font size (half-points) for an ingredient string,
- * shrinking progressively as the declaration grows past each threshold.
+ * Picks the largest ingredient font size (half-points) whose wrapped line
+ * count fits the box the writer will choose for the declaration — compact
+ * for short lists, expanded beyond INGREDIENTS_LONG_THRESHOLD. Sizing by
+ * actual fit keeps the text as large as the available space allows instead
+ * of shrinking purely by character count.
  */
 export function pickIngredientFontSize(ingredients: string): number {
+  const boxHeightPt =
+    ingredients.length > INGREDIENTS_LONG_THRESHOLD
+      ? INGREDIENTS_BOX_EXPANDED_HEIGHT_PT
+      : INGREDIENTS_BOX_COMPACT_HEIGHT_PT;
+
   let size = INGREDIENTS_FONT_MAX_HALF_POINTS;
-
-  for (const threshold of INGREDIENTS_SHRINK_THRESHOLDS) {
-    if (ingredients.length > threshold) {
-      size = Math.max(INGREDIENTS_FONT_MIN_HALF_POINTS, size - 2);
-    }
+  while (
+    size > INGREDIENTS_FONT_MIN_HALF_POINTS &&
+    estimateWrappedLines(ingredients, size, INGREDIENTS_BOX_WIDTH_PT) >
+      ingredientsLineCapacity(boxHeightPt, size)
+  ) {
+    size -= 2;
   }
-
   return size;
 }

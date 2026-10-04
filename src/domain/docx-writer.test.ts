@@ -94,10 +94,12 @@ describe("DOCX label generation", () => {
   it("shrinks long content without changing the template structure", async () => {
     const barcode = await generateGs1BarcodePng(buildGs1Payload(input));
     const template = await readFile(path.join(process.cwd(), "sample", "Lava Cake Label 6''x4''.docx"));
+    const longIngredients =
+      "Enrichedwheatflour (contains, whaetflour, Niacin, reduced Iron, Thiamine, mononitrate, Riboflavin, Folic Acid) Graham flour, sugar, palm oil,  HighFructose corn Syrup, Molasses, salt, Baking Soda. Cream cheese (Milk ingredients, salt, Bacterial culture, xanthan gum, carob bean gum, guar gum, potassium sorbate) . Cream , Raspberries, Modified corn starch, Citric acid, Concentrated carrot juice, Natural flavour, Salt, Potassium sorbate, Sodium benzoate.. dehydrated corn syrup, sugar, animal gelatin (bovine), skimmed milk powder, starch, flavouring. Stablizer (Sugar, glucose, water, Tetrasodium Pyrophosphate, Disodium Phosphate) .";
     const longInput = {
       ...input,
       productName: "Chocolate Raspberry Cheesecake Dessert Cups",
-      ingredients: "Eggs, sugar, wheat flour, margarine, water, monoglycerides, potassium sorbate, citric acid, natural flavor, vitamin A palmitate, vitamin D3, dark chocolate, cocoa butter, unsweetened chocolate, soy lecithin, natural vanilla extract, stabilizer.",
+      ingredients: longIngredients,
     };
     const document = await generateLabelDocxFromTemplate(template, longInput, barcode);
     const zip = await JSZip.loadAsync(document);
@@ -106,8 +108,10 @@ describe("DOCX label generation", () => {
     const productBox = namedAnchor(xml ?? "", "Text Box 2");
 
     expect(ingredientsBox).toContain('<wp:extent cx="3211195" cy="2013284"/>');
-    expect(ingredientsBox).toContain(`<w:sz w:val="${pickIngredientFontSize(longInput.ingredients)}"/>`);
-    expect(ingredientsBox).toContain('<w:sz w:val="18"/>');
+    // The size is the largest that fits the expanded box — 8pt for this
+    // ~635-char declaration, using the box instead of shrinking to the floor.
+    expect(pickIngredientFontSize(longIngredients)).toBe(16);
+    expect(ingredientsBox).toContain(`<w:sz w:val="${pickIngredientFontSize(longIngredients)}"/>`);
     // The title auto-shrinks to the largest size that fits two wrapped lines.
     expect(productBox).toContain(`<w:sz w:val="${pickTitleFontSize(longInput.productName)}"/>`);
     expect(pickTitleFontSize(longInput.productName)).toBeLessThan(42);
@@ -150,11 +154,13 @@ describe("DOCX label generation", () => {
     expect(ingredientsBox).toContain('<wp:extent cx="3211195" cy="2013284"/>');
   });
 
-  it("forbids mid-word line breaking in every prose box paragraph", async () => {
-    // The template ships with East Asian layout rules (<w:useFELayout/>)
-    // that let Word split Latin words at the right box edge ("D" / "ark").
-    // Every paragraph of the wrapping prose boxes must carry
-    // <w:wordWrap w:val="0"/> so words wrap whole instead.
+  it("forces whole-word line breaking in every prose box paragraph", async () => {
+    // Without an explicit setting the paragraphs inherit the template's
+    // East Asian layout rules (<w:useFELayout/>), which can let Word split
+    // Latin words at the right box edge ("D" / "ark"). w:wordWrap w:val="1"
+    // is the wrap-at-word-level switch: every paragraph of the prose boxes
+    // must carry it so words wrap whole. (val="0" would ALLOW mid-word
+    // breaking — see ISO/IEC 29500 §17.3.17.)
     const wordBreakInput = {
       ...input,
       ingredients: "Eggs, sugar, wheat flour, margarine (modified palm oil, water, monoglycerides), Dark Chocolate, cocoa butter.",
@@ -169,9 +175,10 @@ describe("DOCX label generation", () => {
       const box = namedAnchor(xml, name);
       const paragraphs = box.match(/<w:p(?:\s[^>]*)?>/g) ?? [];
       expect(paragraphs.length, `${name} has paragraphs`).toBeGreaterThan(0);
-      const wrappedParagraphs = box.match(/<w:pPr(?:\s[^>]*)?><w:wordWrap w:val="0"\/>/g) ?? [];
+      const wrappedParagraphs = box.match(/<w:pPr(?:\s[^>]*)?><w:wordWrap w:val="1"\/>/g) ?? [];
       expect(wrappedParagraphs, `${name} wraps whole words in every paragraph`).toHaveLength(paragraphs.length);
       expect(box.match(/<w:wordWrap/g)?.length).toBe(paragraphs.length);
+      expect(box).not.toContain('<w:wordWrap w:val="0"/>');
     }
 
     const ingredientsBox = namedAnchor(xml, "Text Box 5");
@@ -179,10 +186,10 @@ describe("DOCX label generation", () => {
     expect(ingredientsBox.indexOf("<w:wordWrap")).toBeLessThan(ingredientsBox.indexOf("Ingredients:"));
   });
 
-  it("keeps the barcode number box character-breakable", async () => {
-    // The human-readable GS1 number is one long unbreakable token; it must
-    // not get whole-word wrapping or it could overflow its box instead of
-    // wrapping at the character level as a last resort.
+  it("keeps the barcode number box free of the whole-word wrap flag", async () => {
+    // The human-readable GS1 number is one long unbreakable token; forcing
+    // word-level wrapping could overflow its box instead of letting the
+    // number wrap at the character level as a last resort.
     const barcode = await generateGs1BarcodePng(buildGs1Payload(input));
     const template = await readFile(path.join(process.cwd(), "sample", "Lava Cake Label 6''x4''.docx"));
     const document = await generateLabelDocxFromTemplate(template, input, barcode);

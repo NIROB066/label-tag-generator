@@ -37,7 +37,9 @@ function drawnTexts(pdf: PDFDocument): DrawnText[] {
 
 /** Joins drawn texts into visual lines, top to bottom, within the ingredients box band. */
 function ingredientsLines(pdf: PDFDocument): string[] {
-  const band = drawnTexts(pdf).filter((t) => t.y > 164.8 && t.y < 265.3);
+  // The ingredients box spans yTop 166.7 to 166.7+158.5 (expanded) — no other
+  // label element draws text inside that band.
+  const band = drawnTexts(pdf).filter((t) => t.y > 106.8 && t.y < 265.3);
   const byBaseline = new Map<number, DrawnText[]>();
   for (const t of band) {
     const key = Math.round(t.y * 10) / 10;
