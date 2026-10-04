@@ -341,9 +341,11 @@ function wrapWholeWords(font: PDFFont, size: number, text: string, maxWidth: num
 
 /**
  * Greedy line layout over styled tokens. Words get a single separating
- * space; words wider than the line are broken mid-word (mirroring Word),
- * and `glued` tokens (like the bold "Ingredients:" label) never receive a
- * separating space after the previous token.
+ * space; `glued` tokens (like the bold "Ingredients:" label) never receive
+ * a separating space after the previous token. A word that no longer fits
+ * the current line wraps whole to the next line — matching Word's
+ * whole-word wrapping — and only a word wider than an entire line is
+ * broken at the character level.
  */
 function layoutFlow(tokens: FlowToken[], fonts: Fonts, maxWidth: number): Segment[][] {
   const lines: Segment[][] = [];
@@ -358,15 +360,29 @@ function layoutFlow(tokens: FlowToken[], fonts: Fonts, maxWidth: number): Segmen
 
   for (const token of tokens) {
     const font = tokenFont(fonts, token.bold);
-    let remaining = token.text;
-    let atTokenStart = true;
+    const prefix = current.length > 0 && !token.glued ? " " : "";
+    const candidate = prefix + token.text;
+    if (used + font.widthOfTextAtSize(candidate, token.size) <= maxWidth) {
+      current.push({ text: candidate, bold: token.bold, size: token.size });
+      used += font.widthOfTextAtSize(candidate, token.size);
+      continue;
+    }
 
+    const tokenWidth = font.widthOfTextAtSize(token.text, token.size);
+    if (tokenWidth <= maxWidth) {
+      // The word fits a line of its own: move it whole, never a prefix.
+      if (current.length > 0) pushLine();
+      current.push({ text: token.text, bold: token.bold, size: token.size });
+      used += tokenWidth;
+      continue;
+    }
+
+    // Wider than an entire line: fall back to character-level breaking.
+    let remaining = token.text;
+    if (current.length > 0) pushLine();
     while (remaining.length > 0) {
-      const prefix = atTokenStart && !token.glued && current.length > 0 ? " " : "";
-      const candidate = prefix + remaining;
-      const piece = fitPrefix(font, token.size, candidate, maxWidth - used);
+      const piece = fitPrefix(font, token.size, remaining, maxWidth - used);
       if (piece === "") {
-        // Not even one character fits — wrap and retry.
         if (current.length > 0) {
           pushLine();
           continue;
@@ -375,15 +391,11 @@ function layoutFlow(tokens: FlowToken[], fonts: Fonts, maxWidth: number): Segmen
         current.push({ text: remaining[0], bold: token.bold, size: token.size });
         used += font.widthOfTextAtSize(remaining[0], token.size);
         remaining = remaining.slice(1);
-        atTokenStart = false;
         continue;
       }
-
       current.push({ text: piece, bold: token.bold, size: token.size });
       used += font.widthOfTextAtSize(piece, token.size);
-      remaining = remaining.slice(piece.length - prefix.length);
-      atTokenStart = false;
-
+      remaining = remaining.slice(piece.length);
       if (remaining.length > 0) {
         pushLine();
       }
